@@ -76,6 +76,14 @@ from .fill import (
     objects_for_pass,
 )
 
+from .underlay import (
+    generate_satin_underlay_preview_lines,
+    lighter_object_blocker_geometry_for_underlay,
+    foreground_blocker_geometry_for_object,
+    subtract_blockers_for_top_fill,
+    combined_satin_guide_rungs_for_object,
+)
+
 __all__ = [
     "NeedSecondCutError",
     "rgb2lab",
@@ -135,4 +143,9 @@ __all__ = [
     "fill_angle_for_geometry",
     "sorted_design_colors",
     "objects_for_pass",
+    "generate_satin_underlay_preview_lines",
+    "lighter_object_blocker_geometry_for_underlay",
+    "foreground_blocker_geometry_for_object",
+    "subtract_blockers_for_top_fill",
+    "combined_satin_guide_rungs_for_object",
 ]
