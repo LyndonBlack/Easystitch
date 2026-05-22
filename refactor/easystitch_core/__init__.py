@@ -33,6 +33,20 @@ from .utils import (
     image_to_data_uri,
 )
 
+from .trace import (
+    find_vtracer_cli,
+    count_svg_paths,
+    trace_prepared_png,
+    parse_traced_svg_for_structure,
+    build_structure_payload_from_trace,
+    extract_stroke_candidates,
+    stroke_preview_svg,
+    connected_components_bool,
+    zhang_suen_thin,
+    _skeleton_segments,
+    split_source_path_object,
+)
+
 __all__ = [
     "NeedSecondCutError",
     "rgb2lab",
@@ -58,4 +72,15 @@ __all__ = [
     "quantize_image",
     "load_image_from_path",
     "run_image_prep",
+    "find_vtracer_cli",
+    "count_svg_paths",
+    "trace_prepared_png",
+    "parse_traced_svg_for_structure",
+    "build_structure_payload_from_trace",
+    "extract_stroke_candidates",
+    "stroke_preview_svg",
+    "connected_components_bool",
+    "zhang_suen_thin",
+    "_skeleton_segments",
+    "split_source_path_object",
 ]
