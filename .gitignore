@@ -26,6 +26,9 @@ test_outputs/refactor/*
 !test_outputs/golden/.gitkeep
 !test_outputs/refactor/.gitkeep
 
+# Runtime artifacts
+_uploads/
+
 # Generated files
 *_prepared.png
 *_traced.svg
