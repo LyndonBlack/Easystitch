@@ -101,6 +101,11 @@ from .export_dst import (
     export_stitch_plan_to_dst,
 )
 
+from .export_pyembroidery import (
+    export_stitch_plan_to_jef,
+    export_stitch_plan_to_vp3,
+)
+
 __all__ = [
     "NeedSecondCutError",
     "rgb2lab",
@@ -173,4 +178,6 @@ __all__ = [
     "build_stitch_plan",
     "build_stitch_preview_svg",
     "export_stitch_plan_to_dst",
+    "export_stitch_plan_to_jef",
+    "export_stitch_plan_to_vp3",
 ]
