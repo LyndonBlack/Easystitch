@@ -69,6 +69,13 @@ from .geometry import (
     _geometry_polygons,
 )
 
+from .fill import (
+    generate_fill_preview_lines,
+    fill_angle_for_geometry,
+    sorted_design_colors,
+    objects_for_pass,
+)
+
 __all__ = [
     "NeedSecondCutError",
     "rgb2lab",
@@ -124,4 +131,8 @@ __all__ = [
     "_nearest_point_on_line_preview",
     "_normal_crossbar_inside_geom",
     "_geometry_polygons",
+    "generate_fill_preview_lines",
+    "fill_angle_for_geometry",
+    "sorted_design_colors",
+    "objects_for_pass",
 ]
