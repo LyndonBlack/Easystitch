@@ -453,8 +453,31 @@ def build_stitch_plan(payload: dict) -> dict:
             satin_underlay_lines = generate_satin_underlay_preview_lines(
                 geom, satin_spacing_px, underlay_inset_px, stitch_len_px
             )
-            target_points = _satin_entry_candidates(top_lines)
-            for line in _order_underlay_to_finish_near(satin_underlay_lines, current_pos, target_points):
+
+            # Compute entry points from the actual continuous zigzag path
+            # candidates, not just raw bar endpoints.  The zigzag converter
+            # always starts with bars[0][0] of the chosen candidate — but
+            # bars[0][0] might not be the same as _satin_entry_candidates
+            # after orient_sequence reverses bars.  We build all 4 possible
+            # zigzag paths and extract their actual first stitch point as
+            # underlay targets so that underlay finishes near a real zigzag
+            # entry.
+            candidate_entries = set()
+            for entry_side in (0, 1):
+                for use_reversed in (False, True):
+                    wip = list(reversed([list(b) for b in top_lines if b and len(b) >= 2])) if use_reversed else [list(b) for b in top_lines if b and len(b) >= 2]
+                    if not wip:
+                        continue
+                    # Manually orient the first bar as _order_satin_bars_zigzag would
+                    if entry_side == 1:
+                        wip[0] = list(reversed(wip[0]))
+                    # Build zigzag from just this candidate orientation
+                    zigzag_candidate = _satin_bars_to_continuous_zigzag(wip)
+                    if zigzag_candidate and len(zigzag_candidate) >= 2:
+                        candidate_entries.add((round(zigzag_candidate[0][0], 1), round(zigzag_candidate[0][1], 1)))
+
+            underlay_targets = list(candidate_entries) if candidate_entries else _satin_entry_candidates(top_lines)
+            for line in _order_underlay_to_finish_near(satin_underlay_lines, current_pos, underlay_targets):
                 current_pos, stitches, jumps = _append_polyline_stitches(
                     events, line, stitch_len_px, current_pos, jump_threshold_px,
                     "underlay_satin_contour_center", obj_id, color,
