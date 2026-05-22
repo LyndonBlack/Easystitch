@@ -563,26 +563,51 @@ def _order_satin_bars_zigzag(lines: list, start_pos: tuple | None = None) -> lis
 
 def _satin_bars_to_continuous_zigzag(ordered_bars: list) -> list:
     """
-    Convert rail-to-rail satin bars into a true continuous satin zigzag path.
+    Convert already-ordered satin rungs into one continuous zigzag path.
 
-    Each generated bar represents the ideal rail-to-rail stitch direction at a
-    sample station.  The machine should not stitch a short step along one rail
-    and then stitch across the same station.  Instead it should travel from the
-    previous rail endpoint directly to the opposite rail endpoint of the next
-    station, creating the classic tight zigzag/ladder.
+    IMPORTANT:
+    ordered_bars must already be ordered and oriented by
+    _order_satin_bars_zigzag(top_lines, current_pos).
+
+    This function must not re-orient or re-sort bars.
+    Each bar represents a rail-to-rail crossing (start = one rail, end = opposite).
+    We preserve the first bar's chosen start point, then for each subsequent
+    bar we cross to the OPPOSITE rail from wherever we currently are.  This
+    produces a true continuous zigzag (left->right->left->right...) instead of
+    a side-step pattern (left->right->right->right...).
     """
     bars = [list(bar) for bar in (ordered_bars or []) if bar and len(bar) >= 2]
     if not bars:
         return []
-    path = [bars[0][0], bars[0][-1]]
+
+    path = []
+
+    # First bar: preserve orientation from _order_satin_bars_zigzag().
+    path.append(bars[0][0])
+    path.append(bars[0][-1])
+
+    last = bars[0][-1]
+
     for bar in bars[1:]:
-        path.append(bar[-1])
-    # Remove exact duplicate consecutive points which can occur at endpoints.
-    clean = []
-    for p in path:
-        if not clean or math.hypot(p[0] - clean[-1][0], p[1] - clean[-1][1]) > 1e-6:
-            clean.append(p)
-    return clean if len(clean) >= 2 else []
+        a = bar[0]
+        b = bar[-1]
+
+        # Zigzag continuity: if the next bar's START point is closer to
+        # where we are (last), then we should cross to its END point
+        # (opposite rail).  If the END is closer, cross to its START.
+        da = math.hypot(a[0] - last[0], a[1] - last[1])
+        db = math.hypot(b[0] - last[0], b[1] - last[1])
+
+        if da <= db:
+            nxt = b
+        else:
+            nxt = a
+
+        if math.hypot(nxt[0] - path[-1][0], nxt[1] - path[-1][1]) > 1e-6:
+            path.append(nxt)
+            last = nxt
+
+    return path if len(path) >= 2 else []
 
 
 # ─────────────────────────────────────────────────────────────────────────────
