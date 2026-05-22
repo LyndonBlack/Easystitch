@@ -97,6 +97,10 @@ from .stitch_plan import (
     build_stitch_preview_svg,
 )
 
+from .export_dst import (
+    export_stitch_plan_to_dst,
+)
+
 __all__ = [
     "NeedSecondCutError",
     "rgb2lab",
@@ -168,4 +172,5 @@ __all__ = [
     "combined_satin_guide_rungs_for_object",
     "build_stitch_plan",
     "build_stitch_preview_svg",
+    "export_stitch_plan_to_dst",
 ]
