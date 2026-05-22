@@ -76,6 +76,14 @@ from .fill import (
     objects_for_pass,
 )
 
+from .satin import (
+    generate_satin_preview_lines,
+    generate_guided_satin_preview_lines,
+    generate_satin_preview_lines_with_guides,
+    build_satin_debug_overlay_svg,
+    clip_manual_rung_to_geometry,
+)
+
 from .underlay import (
     generate_satin_underlay_preview_lines,
     lighter_object_blocker_geometry_for_underlay,
@@ -143,6 +151,11 @@ __all__ = [
     "fill_angle_for_geometry",
     "sorted_design_colors",
     "objects_for_pass",
+    "generate_satin_preview_lines",
+    "generate_guided_satin_preview_lines",
+    "generate_satin_preview_lines_with_guides",
+    "build_satin_debug_overlay_svg",
+    "clip_manual_rung_to_geometry",
     "generate_satin_underlay_preview_lines",
     "lighter_object_blocker_geometry_for_underlay",
     "foreground_blocker_geometry_for_object",
