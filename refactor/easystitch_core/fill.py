@@ -570,6 +570,11 @@ def _satin_bars_to_continuous_zigzag(ordered_bars: list) -> list:
     subsequent bar we cross to the OPPOSITE rail from wherever we are.
     This produces a true left/right alternation instead of stepping
     along one rail.
+
+    The path visits each bar exactly ONCE, picking one endpoint per bar.
+    We then trim the path to remove any doubling-back (e.g. going up one
+    side of the column and back down the other), keeping only the portion
+    from the entry point through the longest monotonic span.
     """
     bars = [list(bar) for bar in (ordered_bars or []) if bar and len(bar) >= 2]
     if not bars:
@@ -584,6 +589,32 @@ def _satin_bars_to_continuous_zigzag(ordered_bars: list) -> list:
         if math.hypot(nxt[0] - path[-1][0], nxt[1] - path[-1][1]) > 1e-6:
             path.append(nxt)
             last = nxt
+
+    # If the path doubled back (e.g. ran up one side then down the other),
+    # trim to the longest monotonic span from the entry point.
+    if len(path) > 6:
+        # Determine the primary axis from the overall span of the path,
+        # not from early steps (which are dominated by cross-column movement).
+        xs = [p[0] for p in path]
+        ys = [p[1] for p in path]
+        span_x = max(xs) - min(xs)
+        span_y = max(ys) - min(ys)
+        axis = 0 if span_x >= span_y else 1  # 0 = x-axis, 1 = y-axis
+        direction = math.copysign(1, path[1][axis] - path[0][axis])
+
+        # Walk forward as long as we're moving in the same direction
+        trimmed = [path[0], path[1]]
+        for i in range(2, len(path)):
+            delta = path[i][axis] - trimmed[-1][axis]
+            if delta * direction >= 0:  # still moving forward
+                trimmed.append(path[i])
+            else:
+                # Direction reversed — stop here
+                break
+
+        if len(trimmed) >= 2:
+            path = trimmed
+
     return path if len(path) >= 2 else []
 
 
