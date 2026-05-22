@@ -1,1086 +1,216 @@
-# EasyStitch Refactor Handover for Hermes Agent
+# EasyStitch — Hermes Agent Handover
 
-## 1. Purpose of this handover
+## Project Overview
 
-This document is intended to hand the EasyStitch project over to the Hermes API-based Agent system for controlled refactoring and future feature development.
+EasyStitch converts simplified PNG/JPG artwork into machine-embroidery files (DST, JEF, VP3). It's a Flask web app with a 4-pane workflow: Image Prep → Trace → Structure Editing → Stitch & Export. The prototype was built as a single 10,399-line monolith (`easystitch_unified_app_v116_continuous_satin_zigzag.py`) and has been refactored into a modular structure.
 
-The current application is a successful prototype but has grown into a large single-file monolith after many iterative changes across multiple AI systems. The next major work should be done with direct file access, terminal execution, browser automation, screenshots, and regression testing.
+## Refactor Status — COMPLETE ✅
 
-The key instruction is:
+The monolith was split into a modular Flask app using the golden-reference strategy (extract verbatim, compare, never rewrite). All code was copied byte-for-byte from the golden v116 monolith.
 
-**Treat the current golden version as the working reference. Do not casually rewrite behaviour from memory. Compare against the golden file whenever uncertain.**
+### Refactor Structure
 
----
-
-## 2. Golden reference version
-
-Use this as the known-good checkpoint:
-
-```text
-easystitch_unified_app_v116_continuous_satin_zigzag.py
+```
+Easystitch/
+├── reference/
+│   └── easystitch_unified_app_v116_continuous_satin_zigzag.py  (10,399 lines, UNTOUCHED)
+├── refactor/
+│   ├── app.py                        (359 lines — Flask shell, imports easystitch_core)
+│   ├── requirements.txt
+│   ├── easystitch_core/
+│   │   ├── __init__.py               (re-exports 73 public symbols)
+│   │   ├── utils.py                  (284 lines — colour, math, SVG helpers)
+│   │   ├── image_prep.py             (210 lines — load, quantize, simplify)
+│   │   ├── trace.py                  (787 lines — vtracer CLI, SVG parsing)
+│   │   ├── geometry.py               (850 lines — Shapely ops, splitting)
+│   │   ├── fill.py                   (653 lines — fill generation, ordering)
+│   │   ├── satin.py                  (1,416 lines — rails, rungs, zigzag)
+│   │   ├── underlay.py               (256 lines — underlay, blockers)
+│   │   ├── stitch_plan.py            (722 lines — plan builder, preview SVG)
+│   │   ├── export_dst.py             (382 lines — DST binary export)
+│   │   └── export_pyembroidery.py    (583 lines — JEF/VP3 via pyembroidery)
+│   ├── tests/
+│   │   ├── test_manual_split.py      (12 regression checks)
+│   │   └── test_satin_handoff.py     (9 regression checks)
+│   └── web/
+│       ├── templates/index.html      (558 lines — extracted HTML)
+│       └── static/
+│           ├── css/app.css           (124 lines — extracted CSS)
+│           └── js/
+│               ├── state.js          (43 lines — global state vars)
+│               ├── tooltips.js       (56 lines — tooltip helpers)
+│               └── app.js            (3,543 lines — main app logic)
+├── test_assets/                      (happysun, house, puppy, sun1, smile1)
+├── test_outputs/                     (golden/ + refactor/ screenshot dirs)
+├── PLAN.md                           (refactor plan doc)
+└── .gitignore
 ```
 
-This version is the reference for:
+### Refactor Phases Completed
 
-- image preparation
-- tracing
-- path structure editing
-- manual cuts
-- cut-guide rungs
-- stitch type assignment
-- fill stitch generation
-- satin stitch generation
-- hoop/design scaling
-- DST export
-- JEF export
-- VP3 Beta export
-- stitch preview and stitch plan playback
+| Phase | Description | Status |
+|-------|-------------|--------|
+| 0 | Copy golden, set up structure | ✅ |
+| 0.1 | Test assets, requirements.txt | ✅ |
+| 1.1–1.10 | 10 backend modules extracted | ✅ |
+| 2.1 | app.py created with easystitch_core imports | ✅ |
+| 2.2 | HTML → web/templates/index.html | ✅ |
+| 2.3 | CSS → web/static/css/app.css | ✅ |
+| 2.4 | JS → web/static/js/app.js (single file) | ✅ |
+| 2.5 | JS split into state.js + tooltips.js + app.js | ✅ |
 
-Before refactoring, copy this file into a protected reference folder, for example:
+Total: **18 files, ~11,000 lines** across backend + frontend.
 
-```text
-reference/
-  easystitch_unified_app_v116_continuous_satin_zigzag.py
-```
-
-Do not edit the reference copy.
-
----
-
-## 3. Golden-reference comparison workflow
-
-The Hermes Agent should use the golden version as an executable oracle.
-
-Recommended setup:
-
-```text
-worktree/
-  reference/
-    easystitch_unified_app_v116_continuous_satin_zigzag.py
-  refactor/
-    app.py
-    easystitch_core/
-    web/
-  test_assets/
-    HappySun.png
-    House.png
-    Puppy_or_ear_junction_test.png
-  test_outputs/
-    golden/
-    refactor/
-```
-
-Whenever a refactor step changes behaviour, run both:
+### How to Run
 
 ```bash
-python reference/easystitch_unified_app_v116_continuous_satin_zigzag.py --port 5001
-python refactor/app.py --port 5002
+cd ~/AI/Easystitch/refactor
+python3 app.py --port 5002
+# or with an image:
+python3 app.py ../happysun.png --no-browser --port 5002
 ```
 
-Then use browser automation to perform the same workflow in both apps and capture screenshots.
+### Key Dependencies
 
-Required comparison screenshots:
-
-```text
-Pane 1 prepared image
-Pane 2 trace preview
-Pane 3 path structure preview
-Pane 4 stitch preview
-Pane 4 generated stitch plan view
-Export stats panel after DST export
+```
+flask, pillow, numpy, scikit-learn, svgpathtools, shapely, pyembroidery
+# vtracer CLI binary (not Python binding): cargo install vtracer --locked
 ```
 
-Keep screenshot names consistent:
+### Critical Traps (from golden monolith)
 
-```text
-test_outputs/golden/happysun_pane4_stitch_preview.png
-test_outputs/refactor/happysun_pane4_stitch_preview.png
+| Trap | Detail |
+|------|--------|
+| Trace segment length | Minimum 3.5px — lower crashes potrace |
+| Satin zigzag | Must be continuous (no side-step bars) |
+| Stitch dots | Default OFF |
+| Hoop orientation | Vertical × Horizontal (260×200 = 200 wide, 260 tall) |
+| Scaling | Scale geometry → effective DPI, not stitch coordinates |
+| Assignment reset | Pane 3 only — must not auto-reset on Pane 4 load |
+| VP3 | Beta status — trim handling fragile |
+| Manual split | Cuts must pass cleanly across the geometry |
+| Connector lines | `connector_geom=geom` can hide wrong-end starts |
+
+## Known Issue: Satin Zigzag Side-Step Pattern (NOT FIXED)
+
+### The Bug
+
+After refactoring, the satin top stitch shows a straight line along one rail instead of a zigzag across the column. This is a **pre-existing bug in v116** (the golden monolith), not introduced by the refactor. The refactored code matches v116 byte-for-byte in this area.
+
+### Symptoms
+
+In the stitch plan events (viewable in exported JSON), the satin top stitches for a column do not alternate rails. Instead they step along one side of the column:
+
+```
+Expected: L→R→L→R→L→R (true zigzag)
+Actual:   L→R→R→R→R→R (first cross, then all on same rail)
 ```
 
-The first goal of refactoring is **behavioural equivalence**, not improvement.
+This creates a visible straight line along the satin column in the DST/JEF output.
 
----
+### The Trigger
 
-## 4. Current working capabilities
+The bug is most visible when manual cuts are applied to the HappySun mouth. Splitting the mouth into 2-3 pieces (via the manual split tool) creates `cut_guide_rungs` that change how satin bars are generated. The bars with cut guide rungs are well-formed, but the continuous zigzag converter doesn't handle them properly.
 
-### 4.1 Image preparation
+The user reports this as: "the first row of satin top stitch jumps from right to left" or "the last stitch of the column jumps across to start the other side of the mouth."
 
-Pane 1 currently supports:
+### Root Cause
 
-- image upload
-- colour reduction
-- smoothing/simplification controls
-- background handling
-- output preview
+The function `_satin_bars_to_continuous_zigzag()` in `fill.py` (lines 564–585) converts ordered satin bars into a continuous zigzag path. The current code:
 
-Recent UI cleanups:
-
-- Posterize Bits slider removed
-- colour count range reduced to 2–20
-
-Future work planned:
-
-- automatic colour count selection
-- better flattening of tiny shading differences
-
-Do not add auto colour count during the first refactor. Preserve current manual behaviour first.
-
----
-
-### 4.2 Trace stage
-
-Pane 2 currently supports tracing with several modes.
-
-Current important setting:
-
-```text
-Trace mode default: Polygon / simpler edges
-Segment length default: 3.5 px
+```python
+def _satin_bars_to_continuous_zigzag(ordered_bars):
+    bars = [list(bar) for bar in (ordered_bars or []) if bar and len(bar) >= 2]
+    if not bars:
+        return []
+    path = [bars[0][0], bars[0][-1]]
+    for bar in bars[1:]:
+        path.append(bar[-1])           # ← ALWAYS appends bar[-1] (same rail!)
+    # Remove duplicates
+    clean = []
+    for p in path:
+        if not clean or math.hypot(p[0] - clean[-1][0], p[1] - clean[-1][1]) > 1e-6:
+            clean.append(p)
+    return clean if len(clean) >= 2 else []
 ```
 
-Important trap:
+After the first bar (which correctly crosses from one rail to the other at `bars[0][0]→bars[0][-1]`), every subsequent bar always appends `bar[-1]` — stepping along the same rail instead of alternating. For 100 bars, this produces 2 cross-column stitches (bar[0]) and 99 same-rail steps.
 
-```text
-Potrace segment length must be within 3.5–10.
+### Attempted Fixes (ALL FAILED — reverted)
+
+#### Attempt 1: Rail Alternation
+Changed `_satin_bars_to_continuous_zigzag` to check distance from `last` to decide whether to pick `bar[0]` or `bar[-1]`:
+
+```python
+for bar in bars[1:]:
+    a, b = bar[0], bar[-1]
+    da = math.hypot(a[0] - last[0], a[1] - last[1])
+    db = math.hypot(b[0] - last[0], b[1] - last[1])
+    nxt = b if da <= db else a
+    ...
 ```
 
-We previously tried 3.0 px to get 25% more polygons, but the tracer panicked:
+**Result:** Fixed the side-step for the first half of the column but created a round-trip effect where the path went from the entry point to the far end and then back to the near end. The second half of bars had their "opposite rail" on the wrong side.
 
-```text
-Segment length is invalid at 3. it must be within 3.5,10
-```
+#### Attempt 2: Monotonic Trim
+Added post-processing to trim the path to the longest monotonic span, preventing doubling-back.
 
-So 3.5 px is the safe lower limit.
+**Result:** Broke all satin paths — the trim was too aggressive on curved columns where the primary axis isn't purely horizontal or vertical.
 
-Pane 2 now auto-runs **Run Trace** the first time it opens after image prep.
+#### Attempt 3: Preview current_pos
+Changed `build_stitch_preview_svg` to track `underlay_end_pos` and pass it to `_order_satin_bars_zigzag` instead of `None`.
 
-QA check:
+**Result:** The preview changed but the underlying issue wasn't fixed. Also caused JS error `cannot access local variable 'ordered_satin_preview_bars'`.
 
-- Prepare an image in Pane 1.
-- Open Pane 2.
-- Confirm Run Trace automatically starts once.
-- Confirm it does not repeatedly auto-run after returning from later panes.
-- Confirm trace output appears without error in all trace modes.
+#### Attempt 4: Zigzag Entry Points for Underlay
+Changed the stitch plan to compute zigzag entry points from actual candidate paths instead of raw bar endpoints.
 
----
+**Result:** Shifted the jump to a different position but didn't eliminate it.
 
-### 4.3 Path structure editing
+#### Attempt 5: Underlay Hint from Previous Stitch
+When `current_pos` is None after a trim, walked back to find the last stitch position and used it as a hint for `_order_underlay_to_finish_near`.
 
-Pane 3 is now the main manual editing and stitch assignment stage.
+**Result:** Didn't fix the fundamental issue; satin still started at the wrong end.
 
-Current behaviours:
+### What the Fix Needs
 
-- Load current trace into path structure.
-- Paths can be assigned:
-  - Fill
-  - Satin
-  - Skip
-- Assignment tools behave like persistent tools.
-- Manual split behaves like a persistent tool.
-- First manual-split click selects target path.
-- Second click starts cut.
-- Third click ends cut.
-- Failed/secondary split mode can still follow.
+The correct fix should:
 
-Important resolved issue:
+1. Make `_satin_bars_to_continuous_zigzag` alternate rails: after `bars[0][0] → bars[0][-1]`, decide for each subsequent bar whether to pick `bar[0]` or `bar[-1]` based on which endpoint continues the zigzag.
 
-A hidden function was repeatedly reinitialising stitch assignments after cuts. This caused assignments to reset while using manual split tools. That was finally resolved by reverting to the correct earlier version and removing the problematic assignment initialiser.
+2. Handle degenerate bars at tapered column ends where both endpoints are on the same physical edge (short bars at narrow tips). These need to be detected and either aligned or skipped.
 
-Critical warning:
+3. NOT use monotonic trimming on the overall path — the zigzag genuinely changes direction as it follows the column, and trimming will break curved shapes.
 
-**Do not reintroduce automatic assignment resets on Pane 3 revisit, manual split, or Pane 4 load.**
+4. If the bar sequence wraps around (generated from rung A to rung B and back), detect this and only use bars in one direction.
 
-Current intended auto assignment behaviour:
+### Key Files
 
-- Pane 3 can run Auto Guess manually.
-- Pane 3 may initialise assignments when first loaded from current trace.
-- Pane 4 must never auto-change Fill/Satin/Skip assignments.
+- **`refactor/easystitch_core/fill.py`** — `_satin_bars_to_continuous_zigzag()` at line 564
+- **`refactor/easystitch_core/stitch_plan.py`** — `build_stitch_plan()` at line 207 (stitch_satin_object inner function), `build_stitch_preview_svg()` at line 531
+- **`refactor/easystitch_core/satin.py`** — `generate_satin_preview_lines()` and `generate_satin_preview_lines_with_guides()`
+- **`refactor/tests/test_satin_handoff.py`** — 9 regression checks for satin behavior
 
-Known limitation:
+### Test Images
 
-Auto Guess is not reliable enough for complex images and should not be the basis of future workflow until reworked later.
+- `test_assets/happysun.png` — Full HappySun image (best for reproducing)
+- `test_assets/smile1.png` — Simplified smile-only image
+- User stitch plan JSONs in `~/Downloads/happysun_stitch_plan (2).json`, `(3).json`
 
----
+### User Workflow to Reproduce
 
-### 4.4 Manual split and cut-guide rungs
+1. Load HappySun
+2. Trace, then load structure
+3. Find the mouth/face path (s2, color #11100B)
+4. Apply 2 manual cuts near the tapered ends of the smile
+5. Assign all 3 pieces as Satin with underlay enabled
+6. Export stitch plan JSON
+7. Check events around the underlay→satin transitions (should be near events 8180–8300)
+8. The first few `top_satin` events after `underlay_satin_contour_center` should zigzag across the column, not step along one rail
 
-Manual split/cuts now also provide cut-guide rung information for satin paths.
+### Notes
 
-Important behaviour:
-
-- A manual cut through a satin column can become the start/end rung for the resulting satin section.
-- This works especially well on the HappySun smile and similar curved satin paths.
-- Pane 4 preview must display correctly and not error with variables such as `satin_show_rails`.
-
-Previously fixed bug:
-
-```text
-Stitch preview failed: name 'satin_show_rails' not defined
-```
-
-Current expectation:
-
-- Manual split cut guides must survive from Pane 3 to Pane 4.
-- Cut-derived rungs should influence satin rail/rung generation.
-- Manual rungs should still work in Pane 4.
-
----
-
-### 4.5 Junction cut tool
-
-A manual junction cut tool was started.
-
-Status:
-
-```text
-Leave it in place, but do not rely on it yet.
-```
-
-The tool shows promise but needs more work. It is lower priority than refactoring, auto cutting, and real-world stitch tests.
-
-Future idea:
-
-- A manual multi-branch junction splitter:
-  - first click = centre
-  - subsequent clicks = branches
-  - double click = finish
-- Later automation:
-  - detect likely Y/T/intersection junctions
-  - ask/confirm split count
-  - generate branch cuts and guide rungs
-
-Do not develop this further until the app is modular.
-
----
-
-## 5. Stitch generation state
-
-### 5.1 Fill stitch behaviour
-
-Current fill behaviour includes:
-
-- top fill object avoidance
-- serpentine/lane fill to minimise jumps and trims
-- top fill avoids different-colour objects
-- top fill tries to avoid crossing internal objects
-- long reposition moves should trim where appropriate
-- underlay remains structurally more linear, but now avoids lighter objects in some cases
-
-Important improvements already made:
-
-- Fill no longer jumps repeatedly across eyes/mouth/eyebrows in the HappySun example.
-- Fill uses serpentine segments to reduce unnecessary trims and jumps.
-- Small gap/corner fill now uses a fixed minimum of:
-
-```text
-0.5 mm
-```
-
-This changed from 1.0 mm because small scaled designs needed better corner coverage.
-
----
-
-### 5.2 Underlay behaviour
-
-Current underlay behaviour:
-
-- fill objects use edge walk plus sparse fill
-- satin objects use contour/centre-ish underlay
-- underlay can protect lighter-colour objects
-- underlay long-jump trim threshold default:
-
-```text
-5.0 mm
-```
-
-Top-layer jump/trim threshold default:
-
-```text
-3.0 mm
-```
-
-Important distinction:
-
-Do not confuse the underlay long-jump trim setting with the top-layer jump/trim threshold. We intentionally restored top trim to 3.0 mm and reduced underlay trim from 10.0 mm to 5.0 mm.
-
----
-
-### 5.3 Satin stitch behaviour
-
-Current satin status is much improved.
-
-Important final fix:
-
-The satin top stitch was changed from side-stepping bars to a continuous zigzag.
-
-Previous incorrect behaviour:
-
-```text
-cross column
-small same-side step
-cross column
-small same-side step
-```
-
-Corrected behaviour:
-
-```text
-left rail → right rail → left rail → right rail
-```
-
-Current key version:
-
-```text
-v116_continuous_satin_zigzag
-```
-
-This is important. Do not regress to the earlier “small side-step” satin.
-
-Satin settings:
-
-- Satin Spacing controls the zigzag density / distance to next opposite rail point.
-- Extra rungs default to 0.
-- Manual/cut rungs can define start/end rungs.
-
-Known future work:
-
-- automatic cutting / segmentation of large/branched satin paths
-- better rail pairing for complex shapes
-- satin width warning after real machine testing
-
----
-
-## 6. Hoop and scaling system
-
-Pane 4 has the current hoop/design scale controls.
-
-Hoop selector options:
-
-```text
-120 × 120 mm
-260 × 200 mm (V × H)
-360 × 200 mm (V × H)
-```
-
-Important convention:
-
-The machine convention here is:
-
-```text
-Vertical × Horizontal
-```
-
-Internally:
-
-```text
-260 × 200 mm means 200 mm wide, 260 mm tall
-360 × 200 mm means 200 mm wide, 360 mm tall
-```
-
-Pane 4 includes:
-
-- hoop frame overlay
-- mm rulers
-- Design longest side slider
-- exact numeric input
-- scaling display
-- selected design size display
-
-Current scaling logic:
-
-- geometry stays in SVG coordinates
-- selected design size determines effective DPI
-- backend uses effective DPI for:
-  - stitch length
-  - fill row spacing
-  - satin spacing
-  - underlay spacing
-  - DST/JEF/VP3 coordinate conversion
-
-Important principle:
-
-**Do not scale finished stitches like an image. Scale the geometry relationship before stitch generation by using effective DPI, then regenerate stitches at normal real-world spacing.**
-
-Current behaviour:
-
-- changing slider updates visual scale/rulers
-- pressing Enter in the numeric design-size field triggers Preview Stitches
-- sliding does not auto-regenerate stitches to avoid overloading
-
-QA check:
-
-- Use HappySun.
-- Set 120 × 120 hoop.
-- Scale design to 120 mm, preview/export.
-- Scale design to 50 mm, press Enter, preview/export.
-- Confirm stitch count decreases naturally.
-- Confirm fill density remains physically reasonable rather than simply shrinking an old dense stitch plan.
-
----
-
-## 7. Export status
-
-### 7.1 DST
-
-DST is the known-good baseline.
-
-Current DST behaviour:
-
-- exports correctly
-- online viewers show expected stitch structure
-- scale works
-- trim/jump events appear acceptable in available viewers
-
-Important limitation:
-
-DST has limited rich metadata and trims are encoded as jump hints. Some viewers may show connector lines even if the machine trims.
-
-Still, DST is currently the validation baseline.
-
----
-
-### 7.2 JEF
-
-JEF support has been added via `pyembroidery`.
-
-Status:
-
-```text
-Better than VP3 in viewer tests.
-Needs real machine testing.
-```
-
-Known viewer oddity:
-
-Some viewers appear to leave off the final stitch near trims, but JEF does not show the erratic VP3 movements seen earlier.
-
-Use JEF as a second real-machine test format.
-
----
-
-### 7.3 VP3 Beta
-
-VP3 is native/preferred for the target Husqvarna Viking / Pfaff-style workflow, but current export through `pyembroidery` is marked Beta.
-
-Button label:
-
-```text
-Export VP3 Beta
-```
-
-Observed issue:
-
-- VP3 viewer output had missing stitches around trim boundaries.
-- It also showed odd erratic movements.
-- Command-position fix and trim-anchor workaround only partly improved the issue.
-
-Conclusion:
-
-Do not treat VP3 as production-ready yet. Keep it for testing only.
-
-Important note:
-
-`pyembroidery` can write VP3, but trim handling appears fragile in this workflow. Avoid piling more hacks into VP3 until real machine behaviour and/or a better VP3 writer strategy is understood.
-
----
-
-### 7.4 Target machine accepted formats
-
-The target machine accepts:
-
-```text
-.VP3  native/preferred
-.HUS
-.SHV
-.SH7
-.DST
-.EXP
-.JEF
-.PEC
-```
-
-Current app supports:
-
-```text
-DST
-JEF
-VP3 Beta
-```
-
-Possible future secondaries:
-
-- EXP may be easy through `pyembroidery`, but may not add much over DST.
-- PEC/PES may be possible depending on library support and machine behaviour.
-- HUS/SHV/SH7 should not be attempted until a reliable writer/library route is identified.
-
----
-
-## 8. Known external dependency notes
-
-### 8.1 pyembroidery
-
-JEF and VP3 export use:
-
-```bash
-pip install pyembroidery
-```
-
-User environment example:
-
-```text
-pyembroidery 1.5.1
-Python 3.14 user install
-```
-
-Important implementation detail:
-
-`pyembroidery 1.5.1` VP3 writer expected a filesystem path, not a `BytesIO`. The exporter was patched to write a temporary file, read it back, and delete it.
-
-Keep that temp-file approach for pyembroidery exports unless confirmed safe otherwise.
-
----
-
-## 9. Critical sticky issues / traps already encountered
-
-### 9.1 Assignment reset bug
-
-Symptoms:
-
-- manual split second cut reset all assignments
-- assignments reinitialised unexpectedly
-- debug message showed assignment init firing
-
-Resolution:
-
-- reverted to correct prior version
-- removed problematic function
-- ensured Pane 4 does not auto-assign stitch types
-
-Trap:
-
-Do not reintroduce assignment initialisation except at intentional load/Auto Guess points.
-
----
-
-### 9.2 Trace segment length crash
-
-Bad value:
-
-```text
-3.0 px
-```
-
-Error:
-
-```text
-Segment length is invalid at 3. it must be within 3.5,10
-```
-
-Safe value:
-
-```text
-3.5 px
-```
-
----
-
-### 9.3 Satin side-step regression
-
-The continuous zigzag fix is crucial.
-
-If satin output shows small rectangular side-steps along a rail, it has regressed.
-
-Expected satin visual:
-
-```text
-tight zigzag across column
-```
-
-Not:
-
-```text
-ladder rung plus side rail travel
-```
-
----
-
-### 9.4 Scaling density trap
-
-Do not scale final stitch coordinates only.
-
-If output becomes too dense or too sparse after resizing, check:
-
-```text
-currentStitchSettings()
-getDesignScaleInfo()
-effective DPI
-backend dpi usage
-mm_to_px()
-DST/JEF coordinate conversion
-```
-
-Spacing settings must remain in real mm.
-
----
-
-### 9.5 Preview dots
-
-Stitch dots are useful at small scale but clutter larger previews.
-
-Current default:
-
-```text
-Show stitch dots = off
-```
-
-Do not default it on.
-
----
-
-### 9.6 Viewer versus machine behaviour
-
-Some online viewers show:
-
-- connector lines
-- missing final stitch near trim
-- different trim interpretation
-- colour simplifications
-
-Real machine testing is required before making definitive file-format decisions.
-
-Use DST as baseline, then JEF, then VP3 Beta.
-
----
-
-## 10. Recommended refactor target structure
-
-Suggested structure:
-
-```text
-easystitch/
-  app.py
-  requirements.txt
-  README.md
-
-  easystitch_core/
-    __init__.py
-    image_prep.py
-    trace.py
-    structure.py
-    geometry.py
-    fill.py
-    satin.py
-    underlay.py
-    stitch_plan.py
-    export_dst.py
-    export_pyembroidery.py
-    export_debug.py
-    utils.py
-
-  web/
-    templates/
-      index.html
-    static/
-      css/
-        app.css
-      js/
-        state.js
-        api.js
-        panes.js
-        pane1_prep.js
-        pane2_trace.js
-        pane3_structure.js
-        pane4_stitch.js
-        preview.js
-        stitch_preview.js
-        export.js
-        tooltips.js
-```
-
-Refactor principle:
-
-```text
-Extract, test, compare. Do not rewrite.
-```
-
----
-
-## 11. Refactor order
-
-### Phase 0 — create protected checkpoint
-
-- Copy v116 to `reference/`.
-- Commit it.
-- Generate baseline outputs for HappySun, house, puppy if available.
-- Store screenshots and exports.
-
-### Phase 1 — backend extraction only
-
-Move Python code into modules while keeping the HTML/JS embedded if needed.
-
-Recommended order:
-
-```text
-1. utils.py
-2. image_prep.py
-3. trace.py
-4. geometry.py
-5. fill.py
-6. underlay.py
-7. satin.py
-8. stitch_plan.py
-9. export_dst.py
-10. export_pyembroidery.py
-```
-
-After each extraction:
-
-```bash
-python -m compileall .
-python app.py --no-browser --port 5002
-```
-
-Then run the same browser workflow and compare screenshots.
-
-### Phase 2 — frontend extraction
-
-Only after backend extraction is stable.
-
-Move:
-
-```text
-CSS → web/static/css/app.css
-HTML → web/templates/index.html
-JS state/API/helpers first
-Pane-specific JS second
-Preview/stitch/export JS last
-```
-
-Do not mix frontend extraction with feature changes.
-
-### Phase 3 — only then resume feature development
-
-Future features:
-
-```text
-auto colour count
-auto cutting / satin segmentation
-better auto assignment
-real VP3 fix or replacement
-additional format tests
-```
-
----
-
-## 12. Regression test suite
-
-Minimum manual/browser regression tests after each phase.
-
-### Test A — HappySun
-
-Purpose:
-
-- fill
-- satin
-- underlay
-- scaling
-- export
-
-Checklist:
-
-```text
-Pane 1: image prep works
-Pane 2: trace auto-runs
-Pane 3: assignments can be edited
-Pane 4: stitch preview works
-Scale to 120 mm and preview
-Scale to 50 mm and preview
-Generate stitch plan
-Export DST
-Export JEF
-Export VP3 Beta if testing only
-```
-
-Expected:
-
-- face fill avoids eyes/mouth/eyebrows
-- sun spike satin is continuous zigzag
-- no huge unexpected top-layer jumps
-- DST matches golden viewer output
-- JEF does not show VP3-style erratic moves
-
----
-
-### Test B — House
-
-Purpose:
-
-- complex simple-craft image
-- highlights auto assignment limits
-- reveals need for auto cutting
-
-Checklist:
-
-```text
-Trace works
-Manual assignment possible
-Satin columns likely need many cuts
-Preview does not crash
-Scaling works
-DST export works
-```
-
-Expected:
-
-- auto assignment may not be good
-- manual work still possible
-- do not treat failures here as stitch engine regressions unless preview/export breaks
-
----
-
-### Test C — Puppy / ears / junction-heavy image
-
-Purpose:
-
-- manual cuts
-- Y/T junctions
-- satin segmentation needs
-
-Checklist:
-
-```text
-Manual split selects target first
-second click starts cut
-third click completes cut
-cut guide rungs appear
-satin output respects cut rungs
-```
-
-Expected:
-
-- lots of manual work still needed
-- future auto cutter should use this as a primary test
-
----
-
-### Test D — Small design scale
-
-Purpose:
-
-- scaling and stitch density
-
-Checklist:
-
-```text
-Set hoop 120×120
-Set design longest side 50 mm
-Press Enter in size field
-Preview Stitches runs
-Generate Stitch Plan
-Export DST
-```
-
-Expected:
-
-- stitch count decreases
-- fill density remains reasonable
-- small gap fill covers corners better than older 1.0 mm behaviour
-- stitch dots can be toggled on for inspection
-
----
-
-## 13. QA checks the Hermes Agent should run automatically
-
-After every refactor step:
-
-```bash
-python -m compileall .
-python app.py --no-browser --port 5002
-```
-
-Browser automation:
-
-```text
-open app
-load HappySun image
-run Pane 1 prep
-open Pane 2 and confirm auto trace
-open Pane 3
-load current trace
-assign/check stitch types
-open Pane 4
-load prepared structure
-preview stitches
-generate stitch plan
-export DST
-export JEF
-```
-
-Screenshot checks:
-
-```text
-no blank panels
-no JS console errors
-no traceback toast
-preview SVG appears
-stitch plan appears
-export stats update
-```
-
-File checks:
-
-```text
-DST file nonzero
-JEF file nonzero
-stitch plan JSON nonzero
-export debug JSON nonzero
-```
-
-Optional format validation:
-
-- open DST and JEF in external viewer if automation allows
-- compare screenshot with golden output
-
----
-
-## 14. Future feature roadmap
-
-### 14.1 Auto colour count selection
-
-Goal:
-
-Most simple images should auto-pick a sensible reduced colour count to flatten minor shading while preserving important design regions.
-
-Possible approach:
-
-```text
-analyse colour clusters after prep
-measure cluster sizes
-merge tiny/nearby clusters
-prefer flat poster-like output
-choose colour count based on elbow/knee in colour-distance curve
-```
-
-Do not implement in monolith. Do after refactor.
-
----
-
-### 14.2 Auto cutting / satin segmentation
-
-This is probably the most important next feature.
-
-Problem:
-
-House and puppy examples show that even simple craft images may need 20–30 manual cuts to make satin columns behave properly.
-
-Needed research:
-
-- How Ink/Stitch expects satin rails/rungs
-- How it handles strokes, rails, and rungs
-- Whether it auto-converts stroke-like paths or relies on user-authored paths
-- How other digitizers segment outlines into satin columns
-
-Potential approach:
-
-```text
-detect long filled outline shapes
-find junctions / branches / high-curvature points
-split at T/Y/intersections
-split at sharp corners
-create cut-guide rungs at split boundaries
-preserve user edits
-allow preview/undo
-```
-
-Primary tests:
-
-```text
-HappySun smile
-puppy ears
-house roof/door/window outlines
-Y/T junction synthetic test
-```
-
----
-
-### 14.3 Better Auto Guess
-
-Current Auto Guess is not reliable.
-
-Past attempted rules:
-
-- everything defaults Fill
-- edge-touching paths Skip
-- column detection Satin
-- enclosed fill correction
-- bbox ratio
-- raster area ratio
-- raster width estimate
-
-The raster width experiment performed badly and was rolled back.
-
-Do not restart Auto Guess until after modular refactor. It needs isolated geometry tests.
-
----
-
-### 14.4 File format work
-
-Real-world testing should guide this.
-
-Priority:
-
-```text
-DST baseline
-JEF real machine test
-VP3 Beta real machine test only if desired
-EXP optional
-```
-
-Avoid more VP3 hacks until we understand real machine behaviour.
-
----
-
-## 15. Agent behaviour instructions
-
-The Hermes Agent should:
-
-```text
-work in small commits
-run syntax checks after every code move
-run the golden comparison workflow frequently
-take screenshots automatically
-never combine refactor and new feature work in one step
-use the golden monolith as reference when unsure
-preserve behaviour before improving it
-ask for human review before deleting old code
-```
-
-The Hermes Agent should not:
-
-```text
-rewrite the entire app at once
-change stitch generation while extracting modules
-change UI behaviour during backend extraction
-trust Auto Guess as correct
-treat VP3 as production-ready
-default stitch dots to on
-lower trace segment length below 3.5 px
-change hoop orientation back to Horizontal × Vertical
-```
-
----
-
-## 16. Final note
-
-This project is now at the transition point from successful prototype to maintainable application.
-
-The current monolith is valuable because it encodes many solved edge cases. The refactor should preserve those behaviours first, then create room for the next hard features:
-
-```text
-auto colour count
-auto cutting
-better file formats
-real machine feedback
-```
-
-The golden version is the truth until the refactored version proves equivalence through screenshots, exports, and stitch plan comparison.
+- The golden monolith (v116) has the same bug — this isn't a refactor regression.
+- The issue is ONLY in the continuous zigzag converter, NOT in the bar generation or ordering.
+- `_order_satin_bars_zigzag()` correctly orders bars using `current_pos` — it picks the right end to start from.
+- The preview (`build_stitch_preview_svg`) also has a separate issue: it calls `_order_satin_bars_zigzag(satin_lines, None)` which ignores the underlay end position. Fixing the converter first is higher priority.
