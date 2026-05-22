@@ -1,4 +1,3 @@
-# Core
 flask>=3.0
 pillow>=10.0
 numpy>=1.26
@@ -10,8 +9,8 @@ shapely>=2.0
 # Export
 pyembroidery>=1.5
 
-# Tracing (vtracer is a standalone CLI binary via cargo)
-# Install: cargo install vtracer --locked
-
 # Image Analysis
 scikit-learn>=1.4
+
+# Tracing (vtracer is a standalone CLI binary via cargo)
+# Install: cargo install vtracer --locked
