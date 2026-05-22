@@ -563,59 +563,26 @@ def _order_satin_bars_zigzag(lines: list, start_pos: tuple | None = None) -> lis
 
 def _satin_bars_to_continuous_zigzag(ordered_bars: list) -> list:
     """
-    Convert already-ordered satin rungs into one continuous zigzag path.
+    Convert rail-to-rail satin bars into a true continuous satin zigzag path.
 
-    Each bar is a rail-to-rail crossing.  We preserve the first bar's
-    orientation (as chosen by _order_satin_bars_zigzag) then for each
-    subsequent bar we cross to the OPPOSITE rail from wherever we are.
-    This produces a true left/right alternation instead of stepping
-    along one rail.
-
-    The path visits each bar exactly ONCE, picking one endpoint per bar.
-    We then trim the path to remove any doubling-back (e.g. going up one
-    side of the column and back down the other), keeping only the portion
-    from the entry point through the longest monotonic span.
+    Each generated bar represents the ideal rail-to-rail stitch direction at a
+    sample station.  The machine should not stitch a short step along one rail
+    and then stitch across the same station.  Instead it should travel from the
+    previous rail endpoint directly to the opposite rail endpoint of the next
+    station, creating the classic tight zigzag/ladder.
     """
     bars = [list(bar) for bar in (ordered_bars or []) if bar and len(bar) >= 2]
     if not bars:
         return []
     path = [bars[0][0], bars[0][-1]]
-    last = bars[0][-1]
     for bar in bars[1:]:
-        a, b = bar[0], bar[-1]
-        da = math.hypot(a[0] - last[0], a[1] - last[1])
-        db = math.hypot(b[0] - last[0], b[1] - last[1])
-        nxt = b if da <= db else a
-        if math.hypot(nxt[0] - path[-1][0], nxt[1] - path[-1][1]) > 1e-6:
-            path.append(nxt)
-            last = nxt
-
-    # If the path doubled back (e.g. ran up one side then down the other),
-    # trim to the longest monotonic span from the entry point.
-    if len(path) > 6:
-        # Determine the primary axis from the overall span of the path,
-        # not from early steps (which are dominated by cross-column movement).
-        xs = [p[0] for p in path]
-        ys = [p[1] for p in path]
-        span_x = max(xs) - min(xs)
-        span_y = max(ys) - min(ys)
-        axis = 0 if span_x >= span_y else 1  # 0 = x-axis, 1 = y-axis
-        direction = math.copysign(1, path[1][axis] - path[0][axis])
-
-        # Walk forward as long as we're moving in the same direction
-        trimmed = [path[0], path[1]]
-        for i in range(2, len(path)):
-            delta = path[i][axis] - trimmed[-1][axis]
-            if delta * direction >= 0:  # still moving forward
-                trimmed.append(path[i])
-            else:
-                # Direction reversed — stop here
-                break
-
-        if len(trimmed) >= 2:
-            path = trimmed
-
-    return path if len(path) >= 2 else []
+        path.append(bar[-1])
+    # Remove exact duplicate consecutive points which can occur at endpoints.
+    clean = []
+    for p in path:
+        if not clean or math.hypot(p[0] - clean[-1][0], p[1] - clean[-1][1]) > 1e-6:
+            clean.append(p)
+    return clean if len(clean) >= 2 else []
 
 
 # ─────────────────────────────────────────────────────────────────────────────
