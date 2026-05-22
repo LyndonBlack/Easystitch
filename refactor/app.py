@@ -25,7 +25,7 @@ from easystitch_core.export_pyembroidery import export_stitch_plan_to_jef, expor
 # ─────────────────────────────────────────────────────────────────────────────
 
 def create_app(initial_input: str | None, output_dir: str) -> Flask:
-    app = Flask(__name__, template_folder="web/templates")
+    app = Flask(__name__, template_folder="web/templates", static_folder="web/static")
     app.config["CURRENT_INPUT"] = os.path.abspath(initial_input) if initial_input else None
     app.config["OUTPUT_DIR"] = os.path.abspath(output_dir)
     app.config["UPLOAD_DIR"] = os.path.join(app.config["OUTPUT_DIR"], "_uploads")
