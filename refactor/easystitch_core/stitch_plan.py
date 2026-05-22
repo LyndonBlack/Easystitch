@@ -324,6 +324,7 @@ def build_stitch_plan(payload: dict) -> dict:
         nonlocal current_pos
         events.append({"type": "trim", "object_id": obj_id, "color": color})
         stats["trims"] += 1
+        current_pos = None
 
     def stitch_fill_object(obj, color):
         nonlocal current_pos
@@ -452,43 +453,8 @@ def build_stitch_plan(payload: dict) -> dict:
             satin_underlay_lines = generate_satin_underlay_preview_lines(
                 geom, satin_spacing_px, underlay_inset_px, stitch_len_px
             )
-
-            # Compute entry points from the actual continuous zigzag path
-            # candidates, not just raw bar endpoints.  The zigzag converter
-            # always starts with bars[0][0] of the chosen candidate — but
-            # bars[0][0] might not be the same as _satin_entry_candidates
-            # after orient_sequence reverses bars.  We build all 4 possible
-            # zigzag paths and extract their actual first stitch point as
-            # underlay targets so that underlay finishes near a real zigzag
-            # entry.
-            candidate_entries = set()
-            for entry_side in (0, 1):
-                for use_reversed in (False, True):
-                    wip = list(reversed([list(b) for b in top_lines if b and len(b) >= 2])) if use_reversed else [list(b) for b in top_lines if b and len(b) >= 2]
-                    if not wip:
-                        continue
-                    # Manually orient the first bar as _order_satin_bars_zigzag would
-                    if entry_side == 1:
-                        wip[0] = list(reversed(wip[0]))
-                    # Build zigzag from just this candidate orientation
-                    zigzag_candidate = _satin_bars_to_continuous_zigzag(wip)
-                    if zigzag_candidate and len(zigzag_candidate) >= 2:
-                        candidate_entries.add((round(zigzag_candidate[0][0], 1), round(zigzag_candidate[0][1], 1)))
-
-            # When current_pos is None (e.g. after a trim from a previous
-            # satin object), the underlay ordering doesn't know which side
-            # is preferred. Walk back to the last stitch to get a hint.
-            if current_pos is None:
-                underlay_hint_pos = None
-                for ev in reversed(events):
-                    if ev.get("type") == "stitch" and "x" in ev:
-                        underlay_hint_pos = (ev["x"], ev["y"])
-                        break
-            else:
-                underlay_hint_pos = current_pos
-
-            underlay_targets = list(candidate_entries) if candidate_entries else _satin_entry_candidates(top_lines)
-            for line in _order_underlay_to_finish_near(satin_underlay_lines, underlay_hint_pos, underlay_targets):
+            target_points = _satin_entry_candidates(top_lines)
+            for line in _order_underlay_to_finish_near(satin_underlay_lines, current_pos, target_points):
                 current_pos, stitches, jumps = _append_polyline_stitches(
                     events, line, stitch_len_px, current_pos, jump_threshold_px,
                     "underlay_satin_contour_center", obj_id, color,
@@ -648,88 +614,77 @@ def build_stitch_preview_svg(payload: dict) -> dict:
             geom, fill_angle, auto_fill_direction, auto_fill_threshold
         )
 
-        # Track the last underlay point so satin ordering knows where
-        # the underlay finished.  This prevents satin from starting at the
-        # opposite end of the column and creating an apparent jump.
-        underlay_end_pos = None
-
         if enable_underlay:
             edge_lines = generate_edge_walk_preview(geom, underlay_inset_px, stitch_len_px)
             for line in edge_lines:
                 chunks.append(_svg_polyline(line, color, 0.75, 0.55, "3 2"))
                 add_preview_line("underlay", line, color, 0.85, 0.65, "3 2")
-                if line:
-                    underlay_end_pos = line[-1]
-                counts["underlay_edge_lines"] += len(edge_lines)
+            counts["underlay_edge_lines"] += len(edge_lines)
 
-                try:
-                    underlay_fill_geom = geom.buffer(-max(underlay_inset_px * 0.45, 0.6))
-                    if underlay_fill_geom.is_empty:
-                        underlay_fill_geom = geom
-                except Exception:
+            try:
+                underlay_fill_geom = geom.buffer(-max(underlay_inset_px * 0.45, 0.6))
+                if underlay_fill_geom.is_empty:
                     underlay_fill_geom = geom
-                light_blockers = lighter_object_blocker_geometry_for_underlay(
-                    obj, objects, assignments,
-                    enabled=underlay_protect_lighter,
-                    threshold=underlay_light_threshold
-                )
-                sparse_underlay_geom = subtract_blockers_for_top_fill(
-                    underlay_fill_geom, light_blockers, safety_px=max(0.35, underlay_row_px * 0.20)
-                )
-                underlay_lines = generate_fill_preview_lines(
-                    sparse_underlay_geom, underlay_row_px, stitch_len_px, object_fill_angle + 90.0,
-                    min_segment_px=small_gap_px
-                )
-                for line in underlay_lines:
-                    chunks.append(_svg_polyline(line, color, 0.65, 0.35, "5 4"))
-                    add_preview_line("underlay", line, color, 0.75, 0.5, "5 4")
-                    if line:
-                        underlay_end_pos = line[-1]
-                counts["underlay_fill_lines"] += len(underlay_lines)
+            except Exception:
+                underlay_fill_geom = geom
+            light_blockers = lighter_object_blocker_geometry_for_underlay(
+                obj, objects, assignments,
+                enabled=underlay_protect_lighter,
+                threshold=underlay_light_threshold
+            )
+            sparse_underlay_geom = subtract_blockers_for_top_fill(
+                underlay_fill_geom, light_blockers, safety_px=max(0.35, underlay_row_px * 0.20)
+            )
+            underlay_lines = generate_fill_preview_lines(
+                sparse_underlay_geom, underlay_row_px, stitch_len_px, object_fill_angle + 90.0,
+                min_segment_px=small_gap_px
+            )
+            for line in underlay_lines:
+                chunks.append(_svg_polyline(line, color, 0.65, 0.35, "5 4"))
+                add_preview_line("underlay", line, color, 0.75, 0.5, "5 4")
+            counts["underlay_fill_lines"] += len(underlay_lines)
 
-            if stype == "fill":
-                blocker_geom = foreground_blocker_geometry_for_object(
-                    obj, objects, assignments, enabled=avoid_top_fill_overlap
+        if stype == "fill":
+            blocker_geom = foreground_blocker_geometry_for_object(
+                obj, objects, assignments, enabled=avoid_top_fill_overlap
+            )
+            top_geom = subtract_blockers_for_top_fill(
+                geom, blocker_geom, safety_px=max(0.35, row_px * 0.35)
+            )
+            top_lines = generate_fill_preview_lines(
+                top_geom, row_px, stitch_len_px, object_fill_angle,
+                min_segment_px=small_gap_px
+            )
+            for line in top_lines:
+                chunks.append(_svg_polyline(line, color, 1.05, 1.0))
+                add_preview_line("top", line, color, 1.05, 1.0, "")
+            counts["top_fill_lines"] += len(top_lines)
+        elif stype == "satin":
+            if satin_debug_rails:
+                overlay = _svg_cut_guide_rungs_overlay(obj)
+                if overlay:
+                    chunks.append(overlay)
+                    debug_svg_chunks.append(overlay)
+            obj_manual_rungs = combined_satin_guide_rungs_for_object(obj, manual_rungs)
+            if obj_manual_rungs:
+                satin_lines = generate_satin_preview_lines_with_guides(
+                    geom,
+                    satin_spacing_px,
+                    satin_max_probe_px,
+                    obj_manual_rungs,
+                    use_guide_helper=satin_use_guide_helper,
+                    extra_end_rungs=satin_end_extra_rungs
                 )
-                top_geom = subtract_blockers_for_top_fill(
-                    geom, blocker_geom, safety_px=max(0.35, row_px * 0.35)
+                counts["manual_rungs"] += len(obj_manual_rungs)
+                counts["cut_guide_rungs"] = counts.get("cut_guide_rungs", 0) + sum(1 for r in obj_manual_rungs if r.get("source") == "manual_split_cut")
+            else:
+                satin_lines = generate_satin_preview_lines(
+                    geom, satin_spacing_px, satin_max_probe_px,
+                    use_guide_helper=satin_use_guide_helper,
+                    extra_end_rungs=satin_end_extra_rungs
                 )
-                top_lines = generate_fill_preview_lines(
-                    top_geom, row_px, stitch_len_px, object_fill_angle,
-                    min_segment_px=small_gap_px
-                )
-                for line in top_lines:
-                    chunks.append(_svg_polyline(line, color, 1.05, 1.0))
-                    add_preview_line("top", line, color, 1.05, 1.0, "")
-                counts["top_fill_lines"] += len(top_lines)
-            elif stype == "satin":
-                if satin_debug_rails:
-                    overlay = _svg_cut_guide_rungs_overlay(obj)
-                    if overlay:
-                        chunks.append(overlay)
-                        debug_svg_chunks.append(overlay)
-                obj_manual_rungs = combined_satin_guide_rungs_for_object(obj, manual_rungs)
-                if obj_manual_rungs:
-                    satin_lines = generate_satin_preview_lines_with_guides(
-                        geom,
-                        satin_spacing_px,
-                        satin_max_probe_px,
-                        obj_manual_rungs,
-                        use_guide_helper=satin_use_guide_helper,
-                        extra_end_rungs=satin_end_extra_rungs
-                    )
-                    counts["manual_rungs"] += len(obj_manual_rungs)
-                    counts["cut_guide_rungs"] = counts.get("cut_guide_rungs", 0) + sum(1 for r in obj_manual_rungs if r.get("source") == "manual_split_cut")
-                else:
-                    satin_lines = generate_satin_preview_lines(
-                        geom, satin_spacing_px, satin_max_probe_px,
-                        use_guide_helper=satin_use_guide_helper,
-                        extra_end_rungs=satin_end_extra_rungs
-                    )
 
-                # Use the last underlay point as the start position for satin
-                # ordering, so satin begins near where underlay finished.
-                ordered_satin_preview_bars = _order_satin_bars_zigzag(satin_lines, underlay_end_pos)
+            ordered_satin_preview_bars = _order_satin_bars_zigzag(satin_lines, None)
             satin_zigzag_path = _satin_bars_to_continuous_zigzag(ordered_satin_preview_bars)
             if satin_zigzag_path:
                 chunks.append(_svg_polyline(satin_zigzag_path, color, 1.15, 1.0))
