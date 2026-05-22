@@ -6,9 +6,11 @@ Convert the 10,399-line monolithic Flask web app (`easystitch_unified_app_v116_c
 
 ## Golden Reference
 
-- **File:** `easystitch_unified_app_v116_continuous_satin_zigzag.py` (388KB)
+**`reference/easystitch_unified_app_v116_continuous_satin_zigzag.py`** is the single authoritative golden source.
+
 - **Status:** Known-good working prototype — all features validated
-- **Copied to:** `reference/` — **do not edit**
+- **Location:** `reference/` — **do not edit**
+- **Root copy:** A convenience copy also exists at repo root for quick launch. The `reference/` copy is the source of truth for all behavioural comparisons.
 
 ## Tools at Our Disposal
 
@@ -69,7 +71,8 @@ Easystitch/
 ├── test_assets/
 │   ├── happysun.png
 │   ├── house.png
-│   └── puppy.png
+│   ├── puppy.png
+│   └── sun1.png
 ├── test_outputs/
 │   ├── golden/     (baseline screenshots from golden monolith)
 │   └── refactor/   (comparison screenshots from refactored app)
@@ -85,6 +88,12 @@ Easystitch/
 - Set up directory structure ✅
 - Install lint/analysis tools ✅
 - Push to GitHub ✅
+
+### Phase 0.1 — Housekeeping (DONE)
+- Populate `test_assets/` with happysun.png, house.png, puppy.png, sun1.png ✅
+- Create `refactor/requirements.txt` with core dependencies ✅
+- Update PLAN.md to mark `reference/` as authoritative golden source ✅
+- Reference copy at repo root retained as convenience launcher
 
 ### Phase 1 — Backend Extraction Only
 Move Python code into modules while keeping HTML/JS embedded if needed.
