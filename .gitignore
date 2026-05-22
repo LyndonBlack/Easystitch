@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+.env
+.venv/
+venv/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Test outputs content (but track dir structure)
+test_outputs/golden/*
+test_outputs/refactor/*
+!test_outputs/golden/.gitkeep
+!test_outputs/refactor/.gitkeep
+
+# Generated files
+*_prepared.png
+*_traced.svg
+*_clean.svg
+*_stitched.svg
+*.dst
+*.jef
+*.vp3
+*.pes
