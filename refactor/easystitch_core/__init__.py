@@ -92,6 +92,11 @@ from .underlay import (
     combined_satin_guide_rungs_for_object,
 )
 
+from .stitch_plan import (
+    build_stitch_plan,
+    build_stitch_preview_svg,
+)
+
 __all__ = [
     "NeedSecondCutError",
     "rgb2lab",
@@ -161,4 +166,6 @@ __all__ = [
     "foreground_blocker_geometry_for_object",
     "subtract_blockers_for_top_fill",
     "combined_satin_guide_rungs_for_object",
+    "build_stitch_plan",
+    "build_stitch_preview_svg",
 ]
