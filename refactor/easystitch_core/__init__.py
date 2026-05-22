@@ -3,6 +3,14 @@
 EasyStitch Core — extracted backend modules.
 """
 
+from .image_prep import (
+    normalise_image,
+    apply_simplify_filter,
+    quantize_image,
+    load_image_from_path,
+    run_image_prep,
+)
+
 from .utils import (
     NeedSecondCutError,
     rgb2lab,
@@ -45,4 +53,9 @@ __all__ = [
     "_svg_debug_dot",
     "_svg_debug_text",
     "image_to_data_uri",
+    "normalise_image",
+    "apply_simplify_filter",
+    "quantize_image",
+    "load_image_from_path",
+    "run_image_prep",
 ]
