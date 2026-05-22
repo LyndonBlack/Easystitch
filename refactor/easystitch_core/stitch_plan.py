@@ -324,7 +324,6 @@ def build_stitch_plan(payload: dict) -> dict:
         nonlocal current_pos
         events.append({"type": "trim", "object_id": obj_id, "color": color})
         stats["trims"] += 1
-        current_pos = None
 
     def stitch_fill_object(obj, color):
         nonlocal current_pos
@@ -476,8 +475,20 @@ def build_stitch_plan(payload: dict) -> dict:
                     if zigzag_candidate and len(zigzag_candidate) >= 2:
                         candidate_entries.add((round(zigzag_candidate[0][0], 1), round(zigzag_candidate[0][1], 1)))
 
+            # When current_pos is None (e.g. after a trim from a previous
+            # satin object), the underlay ordering doesn't know which side
+            # is preferred. Walk back to the last stitch to get a hint.
+            if current_pos is None:
+                underlay_hint_pos = None
+                for ev in reversed(events):
+                    if ev.get("type") == "stitch" and "x" in ev:
+                        underlay_hint_pos = (ev["x"], ev["y"])
+                        break
+            else:
+                underlay_hint_pos = current_pos
+
             underlay_targets = list(candidate_entries) if candidate_entries else _satin_entry_candidates(top_lines)
-            for line in _order_underlay_to_finish_near(satin_underlay_lines, current_pos, underlay_targets):
+            for line in _order_underlay_to_finish_near(satin_underlay_lines, underlay_hint_pos, underlay_targets):
                 current_pos, stitches, jumps = _append_polyline_stitches(
                     events, line, stitch_len_px, current_pos, jump_threshold_px,
                     "underlay_satin_contour_center", obj_id, color,
