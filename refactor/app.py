@@ -393,17 +393,9 @@ def create_app(initial_input: str | None, output_dir: str) -> Flask:
             # Detect ring polygons (exterior = canvas bounds, holes = actual shape)
             has_holes = bool(getattr(geom, 'interiors', ()))
 
-            # Include the boundary coordinates used for the graph (for overlay rendering)
-            from shapely.geometry import Polygon as ShapelyPolygon
-            boundary_coords = list(geom.exterior.coords)
-            if has_holes:
-                largest_hole = max(geom.interiors, key=lambda h: len(h.coords))
-                boundary_coords = list(largest_hole.coords)
-
             result = graph.to_dict()
             result["path_id"] = path_id
             result["has_holes"] = has_holes
-            result["boundary_coords"] = [[float(x), float(y)] for x, y in boundary_coords]
             return jsonify(result)
         except Exception as e:
             import traceback

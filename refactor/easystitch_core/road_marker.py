@@ -89,6 +89,7 @@ class RoadMarkedPath:
     nodes: dict        # id -> Node
     edges: dict        # id -> Edge
     stitch_order: list  # list of edge ids, clockwise traversal
+    boundary_coords: list = field(default_factory=list)  # [[x,y],...] for overlay rendering
 
     def to_dict(self) -> dict:
         return {
@@ -97,6 +98,7 @@ class RoadMarkedPath:
             "nodes": {k: v.to_dict() for k, v in self.nodes.items()},
             "edges": {k: v.to_dict() for k, v in self.edges.items()},
             "stitch_order": self.stitch_order,
+            "boundary_coords": self.boundary_coords,
         }
 
 
@@ -175,6 +177,7 @@ def build_initial_graph(polygon: Polygon) -> RoadMarkedPath:
                 nodes={},
                 edges={},
                 stitch_order=[],
+                boundary_coords=[[float(c[0]), float(c[1])] for c in coords],
             )
 
         # Pick the two most-distant vertices as synthetic nodes.
@@ -207,6 +210,7 @@ def build_initial_graph(polygon: Polygon) -> RoadMarkedPath:
             nodes=nodes,
             edges=edges,
             stitch_order=["e0", "e1"],
+            boundary_coords=[[float(c[0]), float(c[1])] for c in coords],
         )
 
     # ── index each corner by its position on the ring ───────────────────
@@ -277,6 +281,7 @@ def build_initial_graph(polygon: Polygon) -> RoadMarkedPath:
         nodes=nodes,
         edges=edges,
         stitch_order=stitch_order,
+        boundary_coords=[[float(c[0]), float(c[1])] for c in coords],
     )
 
 
