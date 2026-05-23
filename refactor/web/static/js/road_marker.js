@@ -1014,25 +1014,22 @@ const RoadMarker = (function() {
       const overlaySvg = getOverlaySvg();
       if (!overlaySvg) return;
 
-      if (currentRoadData) {
-        renderDebugOverlay(overlaySvg, currentRoadData);
-      } else {
-        overlaySvg.innerHTML = '<text x="50%" y="50%" text-anchor="middle" fill="#888" font-size="16">Loading road graph...</text>';
-        (async () => {
-          const data = await fetchRoadGraph(currentPathId);
-          if (data && !data.error) {
-            currentRoadData = data;
-            if (data.path_count) {
-              showToast('Loaded ' + data.path_count + ' paths, ' +
-                       Object.keys(data.nodes || {}).length + ' nodes, ' +
-                       Object.keys(data.edges || {}).length + ' edges', 'info');
-            }
-            renderDebugOverlay(overlaySvg, data);
-          } else {
-            overlaySvg.innerHTML = '<text x="50%" y="50%" text-anchor="middle" fill="#c44" font-size="16">Failed: ' + (data?.error || 'unknown') + '</text>';
+      // Always fetch all satin paths — the road graph shows everything
+      overlaySvg.innerHTML = '<text x="50%" y="50%" text-anchor="middle" fill="#888" font-size="16">Loading road graph...</text>';
+      (async () => {
+        const data = await fetchRoadGraph(null);
+        if (data && data.ok !== false) {
+          currentRoadData = data;
+          if (data.path_count) {
+            showToast('Loaded ' + data.path_count + ' paths, ' +
+                     Object.keys(data.nodes || {}).length + ' nodes, ' +
+                     Object.keys(data.edges || {}).length + ' edges', 'info');
           }
-        })();
-      }
+          renderDebugOverlay(overlaySvg, data);
+        } else {
+          overlaySvg.innerHTML = '<text x="50%" y="50%" text-anchor="middle" fill="#c44" font-size="16">Failed: ' + (data?.error || 'unknown') + '</text>';
+        }
+      })();
     },
 
     clear() {

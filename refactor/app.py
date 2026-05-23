@@ -382,15 +382,22 @@ def create_app(initial_input: str | None, output_dir: str) -> Flask:
                     geom = max(geom.geoms, key=lambda g: g.area)
                 polygons = {path_id: geom}
             else:
-                # All-paths mode: collect every object that has a fill geometry
+                # All-paths mode: collect every object that has a fill geometry.
+                # Skip the canvas-bbox polygon (bounds match image dimensions).
                 polygons = {}
                 for o in structure["objects"]:
                     try:
                         geom = object_fill_geometry(o)
                         if isinstance(geom, MultiPolygon):
                             geom = max(geom.geoms, key=lambda g: g.area)
-                        if not geom.is_empty:
-                            polygons[o.get("id", "")] = geom
+                        if geom.is_empty:
+                            continue
+                        # Skip canvas-bbox polygons (area > 80% of bbox area)
+                        minx, miny, maxx, maxy = geom.bounds
+                        bbox_area = (maxx - minx) * (maxy - miny)
+                        if bbox_area > 0 and geom.area / bbox_area > 0.85:
+                            continue
+                        polygons[o.get("id", "")] = geom
                     except Exception:
                         continue
 
