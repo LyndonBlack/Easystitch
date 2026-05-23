@@ -540,6 +540,18 @@ const RoadMarker = (function() {
     svg.style.display = 'block';
     svg.style.overflow = 'visible';
 
+    // Draw polygon boundary (faint, behind everything) so user can see the actual shape
+    if (roadData.boundary_coords && roadData.boundary_coords.length > 0) {
+      const polyline = document.createElementNS(svgNS, 'polyline');
+      const pts = roadData.boundary_coords.map(c => `${c[0]},${c[1]}`).join(' ');
+      polyline.setAttribute('points', pts);
+      polyline.setAttribute('fill', 'none');
+      polyline.setAttribute('stroke', '#334466');
+      polyline.setAttribute('stroke-width', '1');
+      polyline.setAttribute('opacity', '0.5');
+      svg.appendChild(polyline);
+    }
+
     // Draw edges first (below nodes)
     // Each edge gets TWO elements: a thick invisible hit area + visible line
     edgeIds.forEach(eid => {
