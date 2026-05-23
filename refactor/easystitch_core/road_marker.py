@@ -117,88 +117,26 @@ def _is_clockwise(coords: list) -> bool:
     return area > 0
 
 
-def build_initial_graph(polygon: Polygon) -> RoadMarkedPath:
+def _process_boundary(bound_poly: Polygon, coords: list, node_offset: int,
+                     edge_offset: int) -> tuple[dict, dict, list, list]:
     """
-    Stage 0A graph builder.
-    Detects sharp corners on the polygon boundary and creates an
-    initial road-marking graph (nodes + edges) with no junction
-    detection or narrow-waist splitting.
-
-    For ring polygons (with holes), corners are detected on the
-    largest interior boundary (which traces the actual shape
-    outline) rather than the exterior canvas bounds.
-
-    For closed polygons the sharpest corner is used as the
-    circuit-break — the stitch order starts after that corner.
+    Detect sharp corners on a single boundary and build its sub-graph
+    (nodes, edges).  Returns the three dicts + ordered node ids list.
+    Uses globally-scoped offsets so IDs are unique across boundaries.
     """
     from .geometry import detect_sharp_corners
 
-    # ── choose the right boundary for corner detection ──────────────────
-    # Try the exterior first (it is the full shape outline for ring
-    # polygons like thick SVG strokes).  Only fall back to interior
-    # holes if the exterior has fewer than 3 corners (likely a canvas
-    # bounding-box exterior for ring polygons).
-    coords = list(polygon.exterior.coords)
-    corner_poly = polygon
-
-    exterior_corners = 0
-    try:
-        ext_corners = detect_sharp_corners(corner_poly, angle_threshold_deg=150.0,
-                                           spatial_radius_px=12.0)
-        exterior_corners = len(ext_corners)
-    except Exception:
-        pass
-
-    if exterior_corners < 3 and polygon.interiors:
-        # Exterior has too few corners (likely canvas bbox).
-        # Search interior holes for the most detailed boundary.
-        best_coords = coords
-        best_corner_poly = corner_poly
-        best_corner_count = 0
-        for hole in polygon.interiors:
-            hole_coords = list(hole.coords)
-            try:
-                hp = Polygon(hole_coords)
-                corners = detect_sharp_corners(hp, angle_threshold_deg=150.0,
-                                               spatial_radius_px=12.0)
-                if len(corners) > best_corner_count:
-                    best_corner_count = len(corners)
-                    best_coords = hole_coords
-                    best_corner_poly = hp
-            except Exception:
-                continue
-        coords = best_coords
-        corner_poly = best_corner_poly
-
-    # ── exterior ring as plain coordinate list ──────────────────────────
-    # Shapely rings are closed — drop the duplicated endpoint.
     if len(coords) > 1 and coords[0] == coords[-1]:
         coords = coords[:-1]
     n = len(coords)
+    if n < 3:
+        return {}, {}, [], list(coords)
 
-    # ── detect sharp corners ────────────────────────────────────────────
-    # Use a lower threshold (45° deviation ≈ interior angle < 135°) to
-    # catch ear-corner junctions and other moderate turns.
-    raw_corners = detect_sharp_corners(corner_poly, angle_threshold_deg=150.0,
-                                      spatial_radius_px=12.0)
-    # raw_corners: list of ((x, y), angle_deg)
+    raw_corners = detect_sharp_corners(bound_poly, angle_threshold_deg=150.0,
+                                       spatial_radius_px=12.0)
 
     if not raw_corners:
-        # Degenerate case: no sharp corners found.
-        # Create two synthetic nodes at opposite ends of the shape and
-        # one edge between them so the graph is at least minimally usable.
-        if n < 3:
-            # Not enough vertices — return empty graph.
-            return RoadMarkedPath(
-                path_id="",
-                rungs={},
-                nodes={},
-                edges={},
-                stitch_order=[],
-                boundary_coords=[[float(c[0]), float(c[1])] for c in coords],
-            )
-
-        # Pick the two most-distant vertices as synthetic nodes.
+        # No corners: create two synthetic nodes at most-distant vertices
         best_dist = -1.0
         best_pair = (0, n // 2)
         for i in range(n):
@@ -208,31 +146,24 @@ def build_initial_graph(polygon: Polygon) -> RoadMarkedPath:
                 if d > best_dist:
                     best_dist = d
                     best_pair = (i, j)
-
         i0, i1 = best_pair
         nodes = {
-            "n0": Node(id="n0", type="endpoint",
-                       position=(float(coords[i0][0]), float(coords[i0][1]))),
-            "n1": Node(id="n1", type="endpoint",
-                       position=(float(coords[i1][0]), float(coords[i1][1]))),
+            f"n{node_offset}": Node(id=f"n{node_offset}", type="endpoint",
+                                    position=(float(coords[i0][0]), float(coords[i0][1]))),
+            f"n{node_offset+1}": Node(id=f"n{node_offset+1}", type="endpoint",
+                                      position=(float(coords[i1][0]), float(coords[i1][1]))),
         }
         edges = {
-            "e0": Edge(id="e0", priority=0,
-                       start_node_id="n0", end_node_id="n1"),
-            "e1": Edge(id="e1", priority=0,
-                       start_node_id="n1", end_node_id="n0"),
+            f"e{edge_offset}": Edge(id=f"e{edge_offset}", priority=0,
+                                    start_node_id=f"n{node_offset}",
+                                    end_node_id=f"n{node_offset+1}"),
+            f"e{edge_offset+1}": Edge(id=f"e{edge_offset+1}", priority=0,
+                                      start_node_id=f"n{node_offset+1}",
+                                      end_node_id=f"n{node_offset}"),
         }
-        return RoadMarkedPath(
-            path_id="",
-            rungs={},
-            nodes=nodes,
-            edges=edges,
-            stitch_order=["e0", "e1"],
-            boundary_coords=[[float(c[0]), float(c[1])] for c in coords],
-        )
+        return nodes, edges, [f"e{edge_offset}", f"e{edge_offset+1}"], list(coords)
 
-    # ── index each corner by its position on the ring ───────────────────
-    # Map coord-index -> (position, angle)
+    # Index each corner by its position on the ring
     corner_by_index: dict[int, tuple] = {}
     for pos, angle in raw_corners:
         px, py = pos
@@ -246,60 +177,112 @@ def build_initial_graph(polygon: Polygon) -> RoadMarkedPath:
         if best_i is not None and best_d < 1.0:
             corner_by_index[best_i] = (pos, angle)
 
-    # Sort in boundary-traversal order.
     sorted_indices = sorted(corner_by_index.keys())
 
-    # ── circuit-break: the sharpest corner (largest deviation) ──────────
+    # Circuit-break at sharpest corner
     sharpest_idx = max(corner_by_index.keys(),
                        key=lambda i: corner_by_index[i][1])
-
-    # Rotate the sorted-indices list so that the sharpest corner is first.
     pivot = sorted_indices.index(sharpest_idx)
     ordered_indices = sorted_indices[pivot:] + sorted_indices[:pivot]
 
-    # ── ensure clockwise traversal ──────────────────────────────────────
+    # Clockwise
     cw = _is_clockwise(coords)
     if not cw:
-        # Reverse the traversal so stitch_order is clockwise.
         ordered_indices = [ordered_indices[0]] + ordered_indices[:0:-1]
 
-    # ── build nodes ─────────────────────────────────────────────────────
+    # Build nodes
     nodes: dict = {}
     for i, idx in enumerate(ordered_indices):
         pos, angle = corner_by_index[idx]
-        nid = f"n{i}"
-        nodes[nid] = Node(
-            id=nid,
-            type="sharp_corner",
-            position=(float(pos[0]), float(pos[1])),
-        )
+        nid = f"n{node_offset + i}"
+        nodes[nid] = Node(id=nid, type="sharp_corner",
+                          position=(float(pos[0]), float(pos[1])))
 
-    # ── build edges (cyclic — last edge connects back to first node) ────
+    # Build edges (cyclic)
     m = len(ordered_indices)
     edges: dict = {}
-    stitch_order: list = []
+    s_order: list = []
     for i in range(m):
-        eid = f"e{i}"
-        start_nid = f"n{i}"
-        end_nid = f"n{(i + 1) % m}"
-        edges[eid] = Edge(
-            id=eid,
-            priority=0,
-            start_node_id=start_nid,
-            end_node_id=end_nid,
-            start_rung_id=None,
-            end_rung_id=None,
-            yield_to_edge_id=None,
+        eid = f"e{edge_offset + i}"
+        start_nid = f"n{node_offset + i}"
+        end_nid = f"n{node_offset + (i + 1) % m}"
+        edges[eid] = Edge(id=eid, priority=0,
+                          start_node_id=start_nid, end_node_id=end_nid)
+        s_order.append(eid)
+
+    # Boundary coords for this boundary
+    bound_coords = [[float(c[0]), float(c[1])] for c in coords]
+
+    return nodes, edges, s_order, bound_coords
+
+
+def build_initial_graph(polygon: Polygon) -> RoadMarkedPath:
+    """
+    Stage 0A graph builder.
+
+    Detects sharp corners on ALL polygon boundaries (exterior + every
+    interior hole) and builds one combined road-marking graph.  Every
+    boundary becomes its own connected sub-graph with unique node/edge
+    IDs.  No junction detection — just corners and edges.
+
+    The exterior is skipped only when it appears to be a canvas
+    bounding-box rectangle (area > 90 % of bbox area).
+    """
+    # ── collect boundaries ───────────────────────────────────────────────
+    boundaries: list[tuple[str, Polygon, list]] = []  # (label, poly, coords)
+
+    # Exterior
+    ext_coords = list(polygon.exterior.coords)
+    minx, miny, maxx, maxy = polygon.bounds
+    bbox_area = (maxx - minx) * (maxy - miny)
+    is_bbox = (bbox_area > 0 and polygon.area / bbox_area > 0.90)
+
+    if not is_bbox:
+        boundaries.append(("ext", polygon, ext_coords))
+
+    # Interior holes
+    if polygon.interiors:
+        for hole in polygon.interiors:
+            hole_coords = list(hole.coords)
+            try:
+                hp = Polygon(hole_coords)
+                if hp.area > 0:
+                    boundaries.append(("hole", hp, hole_coords))
+            except Exception:
+                continue
+
+    # If nothing collected (bbox exterior + no valid holes), use exterior anyway
+    if not boundaries:
+        boundaries.append(("ext", polygon, ext_coords))
+
+    # ── build sub-graphs for each boundary ───────────────────────────────
+    all_nodes: dict = {}
+    all_edges: dict = {}
+    all_stitch_order: list = []
+    all_boundary_coords: list = []  # list of boundaries, each a list of [x,y] pairs
+
+    node_offset = 0
+    edge_offset = 0
+
+    for label, bound_poly, bound_coords in boundaries:
+        nodes, edges, s_order, render_coords = _process_boundary(
+            bound_poly, bound_coords, node_offset, edge_offset
         )
-        stitch_order.append(eid)
+        if nodes:
+            all_nodes.update(nodes)
+            all_edges.update(edges)
+            all_stitch_order.extend(s_order)
+            all_boundary_coords.append(render_coords)
+            node_offset += len(nodes)
+            edge_offset += len(edges)
 
     return RoadMarkedPath(
         path_id="",
         rungs={},
-        nodes=nodes,
-        edges=edges,
-        stitch_order=stitch_order,
-        boundary_coords=[[float(c[0]), float(c[1])] for c in coords],
+        nodes=all_nodes,
+        edges=all_edges,
+        stitch_order=all_stitch_order,
+        boundary_coords=all_boundary_coords,
     )
 
 

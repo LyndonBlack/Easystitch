@@ -546,16 +546,35 @@ const RoadMarker = (function() {
       container.appendChild(svg);
     }
 
-    // Draw polygon boundary (faint, behind everything) so user can see the actual shape
+    // Draw polygon boundary(s) — faint, behind everything so user can see the actual shape.
+    // boundary_coords is now a list of boundaries; each boundary is a list of [x,y] pairs.
     if (roadData.boundary_coords && roadData.boundary_coords.length > 0) {
-      const polyline = document.createElementNS(svgNS, 'polyline');
-      const pts = roadData.boundary_coords.map(c => `${c[0]},${c[1]}`).join(' ');
-      polyline.setAttribute('points', pts);
-      polyline.setAttribute('fill', 'none');
-      polyline.setAttribute('stroke', '#334466');
-      polyline.setAttribute('stroke-width', '1');
-      polyline.setAttribute('opacity', '0.5');
-      svg.appendChild(polyline);
+      const firstEl = roadData.boundary_coords[0];
+      const isNested = firstEl && Array.isArray(firstEl[0]);
+      if (isNested) {
+        // Multiple boundaries: one polyline each
+        roadData.boundary_coords.forEach(boundary => {
+          if (!boundary || boundary.length < 2) return;
+          const polyline = document.createElementNS(svgNS, 'polyline');
+          const pts = boundary.map(c => `${c[0]},${c[1]}`).join(' ');
+          polyline.setAttribute('points', pts);
+          polyline.setAttribute('fill', 'none');
+          polyline.setAttribute('stroke', '#334466');
+          polyline.setAttribute('stroke-width', '1');
+          polyline.setAttribute('opacity', '0.4');
+          svg.appendChild(polyline);
+        });
+      } else {
+        // Legacy: flat list of [x,y] pairs
+        const polyline = document.createElementNS(svgNS, 'polyline');
+        const pts = roadData.boundary_coords.map(c => `${c[0]},${c[1]}`).join(' ');
+        polyline.setAttribute('points', pts);
+        polyline.setAttribute('fill', 'none');
+        polyline.setAttribute('stroke', '#334466');
+        polyline.setAttribute('stroke-width', '1');
+        polyline.setAttribute('opacity', '0.5');
+        svg.appendChild(polyline);
+      }
     }
 
     // Draw edges first (below nodes)
