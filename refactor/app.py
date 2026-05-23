@@ -390,8 +390,12 @@ def create_app(initial_input: str | None, output_dir: str) -> Flask:
             # Cache the fresh graph
             app.config["_ROAD_STATE"][path_id] = graph
 
+            # Detect ring polygons (exterior = canvas bounds, holes = actual shape)
+            has_holes = bool(getattr(geom, 'interiors', ()))
+
             result = graph.to_dict()
             result["path_id"] = path_id
+            result["has_holes"] = has_holes
             return jsonify(result)
         except Exception as e:
             import traceback

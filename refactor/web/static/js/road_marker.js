@@ -510,12 +510,26 @@ const RoadMarker = (function() {
       maxY = Math.max(maxY, pos[1]);
     });
 
-    // Add padding
-    const padding = 30;
-    const viewBoxX = minX - padding;
-    const viewBoxY = minY - padding;
-    const viewBoxW = Math.max(100, (maxX - minX) + padding * 2);
-    const viewBoxH = Math.max(100, (maxY - minY) + padding * 2);
+    // Compute raw bbox dimensions (before padding)
+    const rawW = maxX - minX;
+    const rawH = maxY - minY;
+
+    // Minimum viewBox size to prevent extreme zoom on small polygons
+    const MIN_VIEW = 200;
+    const BASE_PAD = 30;
+
+    let padX = BASE_PAD;
+    let padY = BASE_PAD;
+    if (rawW < MIN_VIEW) padX = (MIN_VIEW - rawW) / 2;
+    if (rawH < MIN_VIEW) padY = (MIN_VIEW - rawH) / 2;
+    // Always keep at least the base padding
+    padX = Math.max(padX, BASE_PAD);
+    padY = Math.max(padY, BASE_PAD);
+
+    const viewBoxX = minX - padX;
+    const viewBoxY = minY - padY;
+    const viewBoxW = rawW + padX * 2;
+    const viewBoxH = rawH + padY * 2;
 
     // Build SVG
     const svgNS = 'http://www.w3.org/2000/svg';
@@ -674,6 +688,21 @@ const RoadMarker = (function() {
     svg.appendChild(lg);
 
     container.appendChild(svg);
+
+    // Ring polygon info note
+    let ringNote = container.querySelector('.ring-polygon-note');
+    if (roadData.has_holes) {
+      if (!ringNote) {
+        ringNote = document.createElement('div');
+        ringNote.className = 'ring-polygon-note';
+        container.appendChild(ringNote);
+      }
+      ringNote.innerHTML = '&#9432; Ring polygon detected &mdash; use <b>Split</b> tool to separate branches (e.g., ears, limbs).';
+      ringNote.style.cssText = 'padding:6px 10px;margin-top:6px;background:#2a2a3a;color:#aac;font-size:0.78rem;' +
+        'border-left:3px solid #4488ff;border-radius:2px;';
+    } else {
+      if (ringNote) ringNote.remove();
+    }
 
     // Attach click handlers after rendering
     attachClickHandlers(svg);

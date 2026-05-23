@@ -693,17 +693,35 @@ def merge_edges(path: RoadMarkedPath, edge_a_id: str, edge_b_id: str) -> RoadMar
     shared_node_id = common.pop()
 
     # Determine the free ends
-    free_a = edge_a.start_node_id if edge_a.end_node_id == shared_node_id else edge_a.end_node_id
-    free_b = edge_b.start_node_id if edge_b.start_node_id == shared_node_id else edge_b.end_node_id
+    free_a = (
+        edge_a.start_node_id
+        if edge_a.end_node_id == shared_node_id
+        else edge_a.end_node_id
+    )
+    free_b = (
+        edge_b.end_node_id
+        if edge_b.start_node_id == shared_node_id
+        else edge_b.start_node_id
+    )
+
+    # Determine the correct rungs for the merged edge.
+    # start_rung comes from the free side of edge_a,
+    # end_rung comes from the free side of edge_b.
+    if free_a == edge_a.start_node_id:
+        merged_start_rung = edge_a.start_rung_id
+    else:
+        merged_start_rung = edge_a.end_rung_id
+
+    if free_b == edge_b.end_node_id:
+        merged_end_rung = edge_b.end_rung_id
+    else:
+        merged_end_rung = edge_b.start_rung_id
 
     # Sanity: free_a and free_b must be different
     if free_a == free_b:
         raise ValueError("Cannot merge edges that share both nodes (would create a loop edge).")
 
-    # If free_b is the start of edge_b, the merged edge direction is free_a -> free_b.
-    # But we need to be consistent with stitch_order.  Typically edge_a comes before
-    # edge_b in the stitch order; the merged edge goes from the free end of edge_a
-    # to the free end of edge_b.
+    # The merged edge goes from the free end of edge_a to the free end of edge_b.
     new_edge_id = f"e{_next_edge_id}"
     _next_edge_id += 1
 
@@ -712,8 +730,8 @@ def merge_edges(path: RoadMarkedPath, edge_a_id: str, edge_b_id: str) -> RoadMar
         priority=edge_a.priority,  # preserve priority from first edge
         start_node_id=free_a,
         end_node_id=free_b,
-        start_rung_id=edge_a.start_rung_id,
-        end_rung_id=edge_b.end_rung_id,
+        start_rung_id=merged_start_rung,
+        end_rung_id=merged_end_rung,
         yield_to_edge_id=edge_a.yield_to_edge_id or edge_b.yield_to_edge_id,
     )
 
