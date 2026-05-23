@@ -125,41 +125,36 @@ const RoadMarker = (function() {
   function attachClickHandlers(svgEl) {
     if (!svgEl) return;
 
-    // Remove old listeners by replacing with a clone
-    const newSvg = svgEl.cloneNode(true);
-    svgEl.parentNode.replaceChild(newSvg, svgEl);
-    updateCursor(newSvg);
+    // Debug: log what we're attaching to
+    const edgeCount = svgEl.querySelectorAll('[data-edge-id]').length;
+    const nodeCount = svgEl.querySelectorAll('[data-node-id]').length;
+    console.log('attachClickHandlers: found', edgeCount, 'edges,', nodeCount, 'nodes on', svgEl.id);
 
-    // Edge click detection: all elements with data-edge-id
-    newSvg.querySelectorAll('[data-edge-id]').forEach(el => {
+    // Edge click detection
+    svgEl.querySelectorAll('[data-edge-id]').forEach(el => {
       el.addEventListener('click', function(e) {
         e.stopPropagation();
         e.preventDefault();
         const edgeId = this.getAttribute('data-edge-id');
+        console.log('Edge clicked:', edgeId, 'tool:', currentTool);
+        showToast('Edge: ' + edgeId, 'success');
         handleEdgeClick(edgeId, e);
       });
     });
 
     // Node click detection
-    newSvg.querySelectorAll('[data-node-id]').forEach(el => {
+    svgEl.querySelectorAll('[data-node-id]').forEach(el => {
       el.addEventListener('click', function(e) {
         e.stopPropagation();
         e.preventDefault();
         const nodeId = this.getAttribute('data-node-id');
+        console.log('Node clicked:', nodeId);
         handleNodeClick(nodeId, e);
       });
     });
 
-    // SVG background click
-    newSvg.addEventListener('click', function(e) {
-      if (e.target === newSvg || e.target.tagName === 'svg') {
-        clearAllHighlights();
-        if (currentTool === 'yield') yieldFirstEdgeId = null;
-        if (currentTool === 'merge') selectedEdgeId = null;
-      }
-    });
-
-    return newSvg;
+    updateCursor(svgEl);
+    return svgEl;
   }
 
   async function handleEdgeClick(edgeId, event) {
