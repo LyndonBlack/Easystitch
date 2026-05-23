@@ -66,6 +66,11 @@ const RoadMarker = (function() {
     yieldFirstEdgeId = null;
     clearAllHighlights();
 
+    // Deactivate structure tools when any road tool (except select) is active
+    if (tool !== 'select' && typeof deactivateStructureTools === 'function') {
+      deactivateStructureTools();
+    }
+
     // Update button active states
     document.querySelectorAll('.road-tool-btn').forEach(btn => {
       btn.classList.toggle('active', btn.getAttribute('data-tool') === tool);

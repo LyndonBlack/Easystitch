@@ -520,6 +520,11 @@ function setStructureTool(tool) {
   structureHoverPoint = null;
   structureNeedSecondCut = false;
 
+  // Deactivate road-marking tools when a structure tool is activated
+  if (structureActiveTool !== 'select' && typeof RoadMarker !== 'undefined' && RoadMarker.setTool) {
+    RoadMarker.setTool('select');
+  }
+
   updateStructureToolButtons();
   renderStructurePreview();
   updateStructureDetail();
@@ -533,6 +538,20 @@ function setStructureTool(tool) {
     assign_skip: 'Skip tool active: click paths to mark Skip'
   };
   toast(labels[structureActiveTool] || 'Tool selected');
+}
+
+// Called by RoadMarker when a road tool is activated — deactivates
+// all structure/stitch assignment tools.
+function deactivateStructureTools() {
+  structureActiveTool = 'select';
+  structureSplitMode = false;
+  structureJunctionMode = false;
+  structureSplitTargetReady = false;
+  structureCutPoints = [];
+  structureJunctionPoints = [];
+  updateStructureToolButtons();
+  renderStructurePreview();
+  updateStructureDetail();
 }
 
 function currentAssignToolType() {
