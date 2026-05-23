@@ -887,11 +887,11 @@ const RoadMarker = (function() {
   // ── Public API ────────────────────────────────────────────────
 
   function getOverlaySvg() {
-    return document.getElementById('road-graph-overlay-svg');
+    return document.getElementById('road-graph-modal-svg');
   }
 
   function getOverlayDiv() {
-    return document.getElementById('road-graph-overlay');
+    return document.getElementById('road-graph-modal');
   }
 
   return {
@@ -919,25 +919,21 @@ const RoadMarker = (function() {
       const btn = document.getElementById('road-graph-toggle-btn');
       if (!overlay || !btn) return;
 
-      const showing = overlay.style.display !== 'none';
+      const showing = overlay.style.display === 'flex';
       if (showing) {
         overlay.style.display = 'none';
         btn.textContent = 'Show Road Graph';
         btn.style.background = '';
       } else {
-        // Align overlay SVG viewBox with the structure preview SVG
-        const structSvg = document.querySelector('#structure-preview svg');
+        // Re-render if we have data (may have been fetched already by path selection)
         const overlaySvg = getOverlaySvg();
-        if (structSvg && overlaySvg) {
-          const vb = structSvg.getAttribute('viewBox');
-          if (vb) overlaySvg.setAttribute('viewBox', vb);
-          overlaySvg.setAttribute('preserveAspectRatio', structSvg.getAttribute('preserveAspectRatio') || 'xMidYMid meet');
-        }
-        // Re-render with correct viewBox if we have data
         if (currentRoadData && overlaySvg) {
           renderDebugOverlay(overlaySvg, currentRoadData);
+        } else if (!currentRoadData && overlaySvg) {
+          // No data yet — show a message
+          overlaySvg.innerHTML = '<text x="50%" y="50%" text-anchor="middle" fill="#666" font-size="18">Select a SATIN path first, then click Show Road Graph</text>';
         }
-        overlay.style.display = 'block';
+        overlay.style.display = 'flex';
         btn.textContent = 'Hide Road Graph';
         btn.style.background = '#1a3a5c';
       }
