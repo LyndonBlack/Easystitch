@@ -531,14 +531,24 @@ const RoadMarker = (function() {
     const viewBoxW = rawW + padX * 2;
     const viewBoxH = rawH + padY * 2;
 
-    // Build SVG
+    // Build SVG — reuse existing SVG element if container IS an SVG
     const svgNS = 'http://www.w3.org/2000/svg';
-    const svg = document.createElementNS(svgNS, 'svg');
-    svg.setAttribute('viewBox', `${viewBoxX} ${viewBoxY} ${viewBoxW} ${viewBoxH}`);
-    svg.setAttribute('width', '100%');
-    svg.setAttribute('height', '100%');
-    svg.style.display = 'block';
-    svg.style.overflow = 'visible';
+    let svg;
+    if (container.tagName === 'svg' || container.tagName === 'SVG') {
+      svg = container;
+      while (svg.firstChild) svg.removeChild(svg.firstChild);
+      svg.setAttribute('viewBox', `${viewBoxX} ${viewBoxY} ${viewBoxW} ${viewBoxH}`);
+      svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+    } else {
+      container.innerHTML = '';
+      svg = document.createElementNS(svgNS, 'svg');
+      svg.setAttribute('viewBox', `${viewBoxX} ${viewBoxY} ${viewBoxW} ${viewBoxH}`);
+      svg.setAttribute('width', '100%');
+      svg.setAttribute('height', '100%');
+      svg.style.display = 'block';
+      svg.style.overflow = 'visible';
+      container.appendChild(svg);
+    }
 
     // Draw polygon boundary (faint, behind everything) so user can see the actual shape
     if (roadData.boundary_coords && roadData.boundary_coords.length > 0) {
@@ -876,43 +886,70 @@ const RoadMarker = (function() {
 
   // ── Public API ────────────────────────────────────────────────
 
+  function getOverlaySvg() {
+    return document.getElementById('road-graph-overlay-svg');
+  }
+
+  function getOverlayDiv() {
+    return document.getElementById('road-graph-overlay');
+  }
+
   return {
     async showRoadGraph(pathId) {
-      const container = document.getElementById('road-overlay-container');
-      if (!container) return;
-
       if (isLoading) return;
       isLoading = true;
       currentPathId = pathId;
 
-      showLoading(container, pathId);
-
       const data = await fetchRoadGraph(pathId);
       isLoading = false;
 
-      if (!data) {
-        showError(container, 'Failed to fetch road graph');
+      if (!data || data.error) {
         currentRoadData = null;
-        return;
-      }
-
-      if (data.error) {
-        showError(container, data.error);
-        currentRoadData = null;
+        console.warn('Road graph fetch failed:', data?.error);
         return;
       }
 
       currentRoadData = data;
-      renderDebugOverlay(container, data);
+      // Render but don't auto-show — user clicks toggle button
+      renderDebugOverlay(getOverlaySvg(), data);
+    },
+
+    toggleOverlay() {
+      const overlay = getOverlayDiv();
+      const btn = document.getElementById('road-graph-toggle-btn');
+      if (!overlay || !btn) return;
+
+      const showing = overlay.style.display !== 'none';
+      if (showing) {
+        overlay.style.display = 'none';
+        btn.textContent = 'Show Road Graph';
+        btn.style.background = '';
+      } else {
+        // Align overlay SVG viewBox with the structure preview SVG
+        const structSvg = document.querySelector('#structure-preview svg');
+        const overlaySvg = getOverlaySvg();
+        if (structSvg && overlaySvg) {
+          const vb = structSvg.getAttribute('viewBox');
+          if (vb) overlaySvg.setAttribute('viewBox', vb);
+          overlaySvg.setAttribute('preserveAspectRatio', structSvg.getAttribute('preserveAspectRatio') || 'xMidYMid meet');
+        }
+        // Re-render with correct viewBox if we have data
+        if (currentRoadData && overlaySvg) {
+          renderDebugOverlay(overlaySvg, currentRoadData);
+        }
+        overlay.style.display = 'block';
+        btn.textContent = 'Hide Road Graph';
+        btn.style.background = '#1a3a5c';
+      }
     },
 
     clear() {
-      const container = document.getElementById('road-overlay-container');
-      if (container) {
-        container.innerHTML = '<span style="color:#555;padding:12px;display:block">Select a SATIN path to view road graph.</span>';
-      }
-      const statusEl = document.getElementById('road-overlay-status');
-      if (statusEl) statusEl.remove();
+      const overlay = getOverlayDiv();
+      if (overlay) overlay.style.display = 'none';
+      const btn = document.getElementById('road-graph-toggle-btn');
+      if (btn) { btn.textContent = 'Show Road Graph'; btn.style.background = ''; }
+      const overlaySvg = getOverlaySvg();
+      if (overlaySvg) overlaySvg.innerHTML = '';
       const panel = document.getElementById('stitch-order-panel');
       if (panel) panel.style.display = 'none';
       currentRoadData = null;

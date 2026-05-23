@@ -136,21 +136,30 @@ def build_initial_graph(polygon: Polygon) -> RoadMarkedPath:
     # ── choose the right boundary for corner detection ──────────────────
     # For ring polygons (thick outlines with interior holes), the exterior
     # is often just the canvas bounding box.  The actual shape detail is
-    # in the largest interior boundary.
+    # in the interior boundaries.  Try each hole and pick the one that
+    # produces the most detected corners (most geometric detail).
     coords = list(polygon.exterior.coords)
     corner_poly = polygon
 
     if polygon.interiors:
-        # Find the largest hole (most vertices = most detail)
-        largest_hole = max(polygon.interiors, key=lambda h: len(h.coords))
-        hole_coords = list(largest_hole.coords)
-        # Use the hole boundary for corner detection.
-        # Create a simple polygon from the hole for detect_sharp_corners.
-        try:
-            corner_poly = Polygon(hole_coords)
-            coords = hole_coords
-        except Exception:
-            pass  # fall back to exterior
+        best_hole_coords = None
+        best_corner_poly = None
+        best_corner_count = -1
+        for hole in polygon.interiors:
+            hole_coords = list(hole.coords)
+            try:
+                hp = Polygon(hole_coords)
+                corners = detect_sharp_corners(hp, angle_threshold_deg=150.0,
+                                               spatial_radius_px=12.0)
+                if len(corners) > best_corner_count:
+                    best_corner_count = len(corners)
+                    best_hole_coords = hole_coords
+                    best_corner_poly = hp
+            except Exception:
+                continue
+        if best_hole_coords is not None:
+            corner_poly = best_corner_poly
+            coords = best_hole_coords
 
     # ── exterior ring as plain coordinate list ──────────────────────────
     # Shapely rings are closed — drop the duplicated endpoint.
