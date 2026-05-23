@@ -71,13 +71,10 @@ const RoadMarker = (function() {
       btn.classList.toggle('active', btn.getAttribute('data-tool') === tool);
     });
 
-    // Update cursor on overlay container
-    const container = document.getElementById('road-overlay-container');
-    if (container) {
-      container.querySelectorAll('svg').forEach(svg => {
-        updateCursor(svg);
-      });
-    }
+    // Update cursor on overlay SVGs (sidebar and modal)
+    document.querySelectorAll('#road-graph-modal-svg').forEach(svg => {
+      updateCursor(svg);
+    });
 
     // Show status
     setStatus(tool === 'select' ? 'Select mode' :
@@ -454,9 +451,11 @@ const RoadMarker = (function() {
   // ── Refresh overlay ──────────────────────────────────────────
 
   function refreshOverlay() {
-    const container = document.getElementById('road-overlay-container');
-    if (!container || !currentRoadData) return;
-    renderDebugOverlay(container, currentRoadData);
+    if (!currentRoadData) return;
+    const modal = getOverlayDiv();
+    if (modal && modal.style.display === 'flex') {
+      renderDebugOverlay(getOverlaySvg(), currentRoadData);
+    }
     if (currentTool === 'reorder') rebuildStitchOrderPanel();
   }
 
