@@ -583,12 +583,23 @@
 <script src="/static/js/road_marker.js"></script>
 
 <!-- Road Graph Modal Overlay -->
-<div id="road-graph-modal" style="display:none;position:fixed;top:0;left:0;width:100vw;height:100vh;background:rgba(0,0,0,0.85);z-index:9999;flex-direction:column;align-items:center;justify-content:center">
-  <div style="position:absolute;top:16px;right:16px;z-index:1">
-    <button onclick="RoadMarker.toggleOverlay()" style="background:#c44;color:#fff;border:none;border-radius:4px;padding:8px 16px;font-size:16px;cursor:pointer">✕ Close</button>
+<div id="road-graph-modal" style="display:none;position:fixed;top:0;left:0;width:100vw;height:100vh;background:rgba(0,0,0,0.92);z-index:9999;flex-direction:column;align-items:center;justify-content:flex-start;padding:16px">
+  <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;flex-shrink:0">
+    <div id="road-modal-toolbar" style="display:flex;flex-wrap:wrap;gap:4px">
+      <button class="btn road-tool-btn active" data-tool="select" onclick="RoadMarker.setTool('select')">&#9997; Select</button>
+      <button class="btn road-tool-btn" data-tool="mark-primary" onclick="RoadMarker.setTool('mark-primary')">&#x1F537; Primary</button>
+      <button class="btn road-tool-btn" data-tool="mark-secondary" onclick="RoadMarker.setTool('mark-secondary')">&#x1F536; Secondary</button>
+      <button class="btn road-tool-btn" data-tool="mark-tertiary" onclick="RoadMarker.setTool('mark-tertiary')">&#x1F538; Tertiary</button>
+      <button class="btn road-tool-btn" data-tool="split" onclick="RoadMarker.setTool('split')">&#x2702; Split</button>
+      <button class="btn road-tool-btn" data-tool="yield" onclick="RoadMarker.setTool('yield')">&#x26A1; Yield</button>
+      <button class="btn road-tool-btn" data-tool="promote" onclick="RoadMarker.setTool('promote')">&#x1F504; Cycle</button>
+      <button class="btn road-tool-btn" data-tool="merge" onclick="RoadMarker.setTool('merge')">&#x1F517; Merge</button>
+      <button class="btn road-tool-btn" data-tool="reorder" onclick="RoadMarker.setTool('reorder')">&#x2195; Reorder</button>
+    </div>
+    <button onclick="RoadMarker.toggleOverlay()" style="background:#c44;color:#fff;border:none;border-radius:4px;padding:8px 16px;font-size:14px;cursor:pointer;margin-left:auto">✕ Close</button>
   </div>
-  <svg id="road-graph-modal-svg" style="width:90vw;height:85vh;background:#0a0e1a;border:1px solid #334;border-radius:4px"></svg>
-  <div id="road-graph-modal-status" style="color:#888;margin-top:8px;font-size:.8rem"></div>
+  <svg id="road-graph-modal-svg" style="flex:1;width:100%;min-height:0;background:#0a0e1a;border:1px solid #334;border-radius:4px"></svg>
+  <div id="road-graph-modal-status" style="color:#888;margin-top:8px;font-size:.8rem;flex-shrink:0"></div>
 </div>
 
 </body>
