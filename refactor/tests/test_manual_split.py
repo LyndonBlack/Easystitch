@@ -5,7 +5,7 @@ This exercises the distance_point_to_segment fix and ensures
 fill/stroke splitting still produces correct output structure.
 """
 import sys
-sys.path.insert(0, '/tmp/Easystitch')
+import os; sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from refactor.easystitch_core.geometry import (
     distance_point_to_segment,
