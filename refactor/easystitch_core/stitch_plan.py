@@ -472,7 +472,7 @@ def build_stitch_plan(payload: dict) -> dict:
                 events, satin_zigzag_path, stitch_len_px, current_pos, jump_threshold_px,
                 "top_satin", obj_id, color,
                 min_gap_px=small_gap_px,
-                connector_geom=geom
+                connector_geom=None
             )
             stats["stitches"] += stitches
             stats["top_stitches"] += stitches

@@ -489,12 +489,21 @@ def _order_underlay_to_finish_near(lines: list,
 
 def _order_satin_bars_zigzag(lines: list, start_pos: tuple | None = None) -> list:
     """
-    Order satin rungs as a true ladder/zigzag path, choosing the best end of
-    the whole column from the current needle position.
+    Order satin rungs for the continuous no-side-step zigzag converter.
 
-    This is important after satin underlay: the underlay may finish at either
-    end of the column.  The visible satin should begin at the nearest practical
-    rung endpoint, not jump back to the generator's original first rung.
+    Contract for _satin_bars_to_continuous_zigzag():
+      - the first returned bar is oriented as the actual first cross stitch
+      - for every following bar, bar[-1] is the next opposite-rail destination
+
+    Manual split / cut-guide rungs can interleave cap/end bars with body bars.
+    The older implementation only tried original/reversed list order. Pure
+    nearest-neighbour can improve the split mouth, but may also consume
+    reverse-pass/end-cap bars and cause walk-back artefacts.
+
+    This keeps the original four golden candidates, then adds PCA/axis-sorted
+    candidates only when the bar centres form an elongated/open column. Every
+    candidate is scored using the actual continuous zigzag path, with heavy
+    penalties for short same-rail walk segments and rogue long crossings.
     """
     bars = [list(line) for line in lines if line and len(line) >= 2]
     if not bars:
@@ -503,15 +512,28 @@ def _order_satin_bars_zigzag(lines: list, start_pos: tuple | None = None) -> lis
     def point_dist(a, b):
         return math.hypot(a[0] - b[0], a[1] - b[1])
 
+    def bar_len(bar):
+        return point_dist(bar[0], bar[-1])
+
+    def centre(bar):
+        return ((bar[0][0] + bar[-1][0]) * 0.5, (bar[0][1] + bar[-1][1]) * 0.5)
+
+    def path_from_ordered(seq):
+        seq = [list(bar) for bar in seq if bar and len(bar) >= 2]
+        if not seq:
+            return []
+        path = [seq[0][0], seq[0][-1]]
+        for bar in seq[1:]:
+            p = bar[-1]
+            if math.hypot(p[0] - path[-1][0], p[1] - path[-1][1]) > 1e-6:
+                path.append(p)
+        return path
+
     def orient_sequence(seq, entry_side=None):
         seq = [list(bar) for bar in seq]
         if not seq:
             return []
 
-        # entry_side:
-        #   0 means start at seq[0][0]
-        #   1 means start at seq[0][-1]
-        #   None means choose nearest to start_pos
         if entry_side == 1:
             seq[0] = list(reversed(seq[0]))
         elif entry_side is None and start_pos is not None:
@@ -526,63 +548,146 @@ def _order_satin_bars_zigzag(lines: list, start_pos: tuple | None = None) -> lis
         for bar in seq[1:]:
             d0 = point_dist(bar[0], last_end)
             d1 = point_dist(bar[-1], last_end)
+
+            # For continuous satin, bar[-1] must be the next cross-column
+            # destination. If bar[-1] is the near/same-side endpoint, reverse.
             if d1 < d0:
                 bar = list(reversed(bar))
+
             ordered.append(bar)
             last_end = bar[-1]
 
         return ordered
 
+    def pca_axis_for_bars(seq):
+        cs = [centre(b) for b in seq]
+        if len(cs) < 3:
+            return None, 1.0
+
+        mx = sum(c[0] for c in cs) / len(cs)
+        my = sum(c[1] for c in cs) / len(cs)
+        sxx = sum((c[0] - mx) * (c[0] - mx) for c in cs) / len(cs)
+        syy = sum((c[1] - my) * (c[1] - my) for c in cs) / len(cs)
+        sxy = sum((c[0] - mx) * (c[1] - my) for c in cs) / len(cs)
+
+        trace = sxx + syy
+        det_term = math.sqrt(max(0.0, (sxx - syy) * (sxx - syy) + 4.0 * sxy * sxy))
+        l1 = (trace + det_term) * 0.5
+        l2 = (trace - det_term) * 0.5
+        if l1 <= 1e-9:
+            return None, 1.0
+
+        ratio = math.sqrt(l1 / max(l2, 1e-9))
+        angle = 0.5 * math.atan2(2.0 * sxy, sxx - syy)
+        return (math.cos(angle), math.sin(angle)), ratio
+
+    def sorted_by_axis(seq, reverse=False):
+        axis, ratio = pca_axis_for_bars(seq)
+        if axis is None:
+            return None, ratio
+        ux, uy = axis
+        ordered = sorted(
+            [list(bar) for bar in seq],
+            key=lambda b: centre(b)[0] * ux + centre(b)[1] * uy,
+            reverse=reverse,
+        )
+        return ordered, ratio
+
+    def median(values):
+        vals = sorted(v for v in values if v > 1e-9)
+        if not vals:
+            return 0.0
+        mid = len(vals) // 2
+        if len(vals) % 2:
+            return vals[mid]
+        return (vals[mid - 1] + vals[mid]) * 0.5
+
+    widths = [bar_len(b) for b in bars]
+    median_width = median(widths) or 1.0
+
     candidates = []
 
-    # Normal generated direction, both possible first-side entries.
+    # Original golden-version candidates. These are still best for many closed
+    # or already-well-ordered shapes, especially ring-like satin objects.
     candidates.append(orient_sequence(bars, entry_side=0))
     candidates.append(orient_sequence(bars, entry_side=1))
-
-    # Reversed generated direction, both possible first-side entries.
     rbars = list(reversed([list(bar) for bar in bars]))
     candidates.append(orient_sequence(rbars, entry_side=0))
     candidates.append(orient_sequence(rbars, entry_side=1))
 
-    # Choose the candidate whose first needle drop is nearest the current point.
-    # Tie-breaker: shorter final path travel between consecutive bars.
+    # Physical-order candidates for elongated/open columns.
+    axis_sorted, axis_ratio = sorted_by_axis(bars, reverse=False)
+    if axis_sorted is not None and axis_ratio >= 2.2:
+        candidates.append(orient_sequence(axis_sorted, entry_side=0))
+        candidates.append(orient_sequence(axis_sorted, entry_side=1))
+        rev_axis_sorted = list(reversed([list(bar) for bar in axis_sorted]))
+        candidates.append(orient_sequence(rev_axis_sorted, entry_side=0))
+        candidates.append(orient_sequence(rev_axis_sorted, entry_side=1))
+
     def candidate_score(seq):
         if not seq:
             return float("inf")
-        entry = seq[0][0]
+        path = path_from_ordered(seq)
+        if len(path) < 2:
+            return float("inf")
+
+        entry = path[0]
         entry_cost = point_dist(entry, start_pos) if start_pos is not None else 0.0
-        travel_cost = 0.0
-        last = seq[0][-1]
-        for bar in seq[1:]:
-            travel_cost += point_dist(last, bar[0])
-            last = bar[-1]
-        return entry_cost * 10.0 + travel_cost * 0.05
+
+        travel = 0.0
+        short_penalty = 0.0
+        long_penalty = 0.0
+        segment_count = 0
+
+        # A no-side-step satin path should mostly consist of cross-column
+        # stitches. Very short segments indicate rail-walking. Very long segments
+        # indicate an ordering/rung outlier.
+        short_limit = max(0.35, median_width * 0.45)
+        long_limit = max(median_width * 2.75, median_width + 8.0)
+
+        for i in range(len(path) - 1):
+            d = point_dist(path[i], path[i + 1])
+            travel += d
+            segment_count += 1
+            if d < short_limit:
+                short_penalty += (short_limit - d) / max(short_limit, 1e-6)
+            elif d > long_limit:
+                long_penalty += (d - long_limit) / max(long_limit, 1e-6)
+
+        return (
+            entry_cost * 8.0
+            + short_penalty * 10000.0
+            + long_penalty * 5000.0
+            + travel * 0.03
+            + segment_count * 0.001
+        )
 
     return min(candidates, key=candidate_score)
 
 
+
 def _satin_bars_to_continuous_zigzag(ordered_bars: list) -> list:
     """
-    Convert rail-to-rail satin bars into a true continuous satin zigzag path.
+    Convert ordered/oriented rail-to-rail satin bars into one continuous
+    no-side-step zigzag path.
 
-    Each generated bar represents the ideal rail-to-rail stitch direction at a
-    sample station.  The machine should not stitch a short step along one rail
-    and then stitch across the same station.  Instead it should travel from the
-    previous rail endpoint directly to the opposite rail endpoint of the next
-    station, creating the classic tight zigzag/ladder.
+    Precondition from _order_satin_bars_zigzag(): every following bar has been
+    oriented so bar[-1] is the next opposite-rail destination. Therefore we
+    append only bar[-1] for bars[1:]. Appending bar[0] too would reintroduce the
+    square/ladder side-step stitches that were deliberately removed.
     """
     bars = [list(bar) for bar in (ordered_bars or []) if bar and len(bar) >= 2]
     if not bars:
         return []
+
     path = [bars[0][0], bars[0][-1]]
     for bar in bars[1:]:
-        path.append(bar[-1])
-    # Remove exact duplicate consecutive points which can occur at endpoints.
-    clean = []
-    for p in path:
-        if not clean or math.hypot(p[0] - clean[-1][0], p[1] - clean[-1][1]) > 1e-6:
-            clean.append(p)
-    return clean if len(clean) >= 2 else []
+        next_point = bar[-1]
+        if math.hypot(next_point[0] - path[-1][0], next_point[1] - path[-1][1]) > 1e-6:
+            path.append(next_point)
+
+    return path if len(path) >= 2 else []
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -827,3 +827,132 @@ def reorder_stitch_order(path: RoadMarkedPath, new_order: list) -> RoadMarkedPat
         stitch_order=list(new_order),
     )
     return new_path
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage 2 — Auto-detect junctions, split edges, and place yield rungs
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def auto_detect_junctions(path: RoadMarkedPath, polygon: Polygon,
+                          stitch_spacing: float = 20.0) -> RoadMarkedPath:
+    """
+    Stage 2: Auto-detect narrow-waist junctions, split edges at those
+    junctions, and place yield rungs so satin stitches don't bleed
+    across narrow waists.
+
+    1. Calls ``geometry.detect_junctions()`` to find junction midpoints.
+    2. For each junction:
+       a. Finds the edges closest to the junction midpoint.
+       b. Splits each edge at the projected position (creating rungs).
+       c. After all splits, places yield rungs between edges meeting
+          at the junction node.
+
+    Returns a modified copy of the path (the original is unchanged).
+    """
+    from .geometry import detect_junctions
+
+    junctions = detect_junctions(polygon, stitch_spacing)
+    if not junctions:
+        return RoadMarkedPath(
+            path_id=path.path_id,
+            rungs=dict(path.rungs),
+            nodes=dict(path.nodes),
+            edges=dict(path.edges),
+            stitch_order=list(path.stitch_order),
+            boundary_coords=list(path.boundary_coords),
+        )
+
+    current_path = RoadMarkedPath(
+        path_id=path.path_id,
+        rungs=dict(path.rungs),
+        nodes=dict(path.nodes),
+        edges=dict(path.edges),
+        stitch_order=list(path.stitch_order),
+        boundary_coords=list(path.boundary_coords),
+    )
+
+    coords = _get_boundary_coords(polygon)
+
+    # Track which junction nodes were created (for yield rung placement)
+    junction_nodes = []
+
+    for junction_pt in junctions:
+        _init_counters_from_path(current_path)
+
+        # Find edges near this junction point
+        edge_dists = []
+        for eid in current_path.stitch_order:
+            line = _edge_boundary_line(current_path, eid, coords)
+            if line is not None:
+                pt = Point(junction_pt[0], junction_pt[1])
+                edge_dists.append((eid, line.distance(pt)))
+
+        if not edge_dists:
+            continue
+
+        # Only split the closest edge — this is the edge that the waist
+        # line crosses.
+        edge_dists.sort(key=lambda x: x[1])
+        closest_edge_id = edge_dists[0][0]
+
+        # Project the junction midpoint onto the edge's boundary segment
+        proj_pos = _project_point_on_edge(
+            current_path, closest_edge_id, junction_pt, coords
+        )
+        if proj_pos is None:
+            proj_pos = junction_pt
+
+        # Split the edge at the projected point
+        try:
+            current_path = place_split_node(current_path, proj_pos, polygon)
+        except (ValueError, RuntimeError):
+            continue
+
+        # Find the newly created node (the one at the split position)
+        best_nid = None
+        best_nd = float("inf")
+        for nid, node in current_path.nodes.items():
+            if node.type == "user_cut":
+                d = math.hypot(
+                    node.position[0] - proj_pos[0],
+                    node.position[1] - proj_pos[1],
+                )
+                if d < stitch_spacing * 2 and d < best_nd:
+                    best_nd = d
+                    best_nid = nid
+
+        if best_nid is not None:
+            junction_nodes.append(best_nid)
+
+    # ── Place yield rungs at junction nodes ──────────────────────────────
+    for jnid in junction_nodes:
+        if jnid not in current_path.nodes:
+            continue
+
+        _init_counters_from_path(current_path)
+        node_pos = current_path.nodes[jnid].position
+
+        # Find all edges that meet at this junction node
+        incident_edges = []
+        for eid in current_path.stitch_order:
+            edge = current_path.edges[eid]
+            if edge.start_node_id == jnid or edge.end_node_id == jnid:
+                incident_edges.append(eid)
+
+        if len(incident_edges) < 2:
+            continue
+
+        # The first edge is primary (passes through), others yield
+        primary_edge_id = incident_edges[0]
+
+        for sec_edge_id in incident_edges[1:]:
+            try:
+                current_path = place_yield_rung(
+                    current_path, node_pos,
+                    primary_edge_id, sec_edge_id, polygon,
+                )
+            except (ValueError, RuntimeError):
+                continue
+
+    return current_path

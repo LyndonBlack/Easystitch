@@ -145,6 +145,243 @@ def detect_sharp_corners(polygon, angle_threshold_deg: float = 90.0,
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Junction detection (Stage 2 — Auto-detect narrow waists)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _local_width_at_point(polygon, point, max_width: float = 500.0) -> float:
+    """
+    Compute the local interior width of a polygon at a boundary point.
+
+    Finds the closest vertex on the boundary, computes the inward normal
+    direction, casts a ray inward, and measures the distance to the
+    opposite boundary intersection.
+
+    Returns 0.0 if the width cannot be determined.
+    """
+    coords = list(polygon.exterior.coords)
+    if len(coords) > 1 and coords[0] == coords[-1]:
+        coords = coords[:-1]
+    n = len(coords)
+    if n < 3:
+        return 0.0
+
+    px, py = float(point[0]), float(point[1])
+
+    # Find closest vertex on the boundary
+    best_i = 0
+    best_d = float("inf")
+    for i, (cx, cy) in enumerate(coords):
+        d = math.hypot(px - cx, py - cy)
+        if d < best_d:
+            best_d = d
+            best_i = i
+
+    # Compute tangent at that vertex using neighbours
+    prev_i = (best_i - 1) % n
+    next_i = (best_i + 1) % n
+    dx = coords[next_i][0] - coords[prev_i][0]
+    dy = coords[next_i][1] - coords[prev_i][1]
+    tlen = math.hypot(dx, dy)
+    if tlen < 1e-9:
+        return 0.0
+
+    # Right-pointing normal (rotate tangent 90° CW)
+    nx = -dy / tlen
+    ny = dx / tlen
+
+    # Determine which normal direction points inward
+    test_dist = min(2.0, max_width * 0.01)
+    inward_found = False
+    in_nx = nx
+    in_ny = ny
+    for sign in (1.0, -1.0):
+        tx = px + nx * sign * test_dist
+        ty = py + ny * sign * test_dist
+        try:
+            if polygon.contains(Point(tx, ty)):
+                in_nx = nx * sign
+                in_ny = ny * sign
+                inward_found = True
+                break
+        except Exception:
+            continue
+
+    if not inward_found:
+        # Fallback: try both sides and pick whichever gives a longer intersection
+        candidates = []
+        for sign in (1.0, -1.0):
+            try:
+                ray = LineString([
+                    (px + nx * sign * 0.5, py + ny * sign * 0.5),
+                    (px + nx * sign * max_width, py + ny * sign * max_width),
+                ])
+                inter = polygon.boundary.intersection(ray)
+                if not inter.is_empty:
+                    if inter.geom_type == "Point":
+                        candidates.append((sign, math.hypot(inter.x - px, inter.y - py)))
+                    elif inter.geom_type == "MultiPoint":
+                        pts_list = list(inter.geoms)
+                        if pts_list:
+                            d = math.hypot(pts_list[0].x - px, pts_list[0].y - py)
+                            candidates.append((sign, d))
+            except Exception:
+                continue
+        if candidates:
+            candidates.sort(key=lambda x: x[1], reverse=True)
+            in_nx = nx * candidates[0][0]
+            in_ny = ny * candidates[0][0]
+        else:
+            return 0.0
+
+    # Cast ray inward from just inside the boundary
+    try:
+        ray = LineString([
+            (px + in_nx * 0.5, py + in_ny * 0.5),
+            (px + in_nx * max_width, py + in_ny * max_width),
+        ])
+        inter = polygon.boundary.intersection(ray)
+    except Exception:
+        return 0.0
+
+    if inter.is_empty:
+        return 0.0
+
+    # Parse intersection result
+    if inter.geom_type == "Point":
+        return math.hypot(inter.x - px, inter.y - py)
+    elif inter.geom_type == "MultiPoint":
+        pts_list = list(inter.geoms)
+        # Find the closest intersection that isn't right at the boundary point
+        min_d = float("inf")
+        for pt_geom in pts_list:
+            d = math.hypot(pt_geom.x - px, pt_geom.y - py)
+            if 0.5 < d < min_d:
+                min_d = d
+        return min_d if min_d < float("inf") else 0.0
+    elif inter.geom_type in ("LineString", "MultiLineString"):
+        segs = _line_geom_intersections_as_segments(inter)
+        if segs:
+            coords_inter = list(segs[0].coords)
+            if len(coords_inter) >= 2:
+                return math.hypot(
+                    coords_inter[-1][0] - coords_inter[0][0],
+                    coords_inter[-1][1] - coords_inter[0][1],
+                )
+
+    return 0.0
+
+
+def _cluster_points(points, radius: float) -> list:
+    """
+    Simple distance-based clustering of 2D points.
+
+    For each point, add it to an existing cluster if within *radius*
+    of any cluster member; otherwise create a new cluster.
+
+    Returns a list of clusters, where each cluster is a list of
+    (x, y) tuples.
+    """
+    clusters: list[list[tuple[float, float]]] = []
+    for pt in points:
+        added = False
+        for cluster in clusters:
+            for member in cluster:
+                if math.hypot(pt[0] - member[0], pt[1] - member[1]) <= radius:
+                    cluster.append(pt)
+                    added = True
+                    break
+            if added:
+                break
+        if not added:
+            clusters.append([pt])
+    return clusters
+
+
+def detect_junctions(polygon, stitch_spacing: float = 20.0) -> list:
+    """
+    Detect narrow-waist junction points on a polygon boundary (Stage 2).
+
+    For each boundary point *p*, finds the closest non-adjacent boundary
+    point *q*.  If distance(p, q) < 3 × stitch_spacing AND the local
+    shape width at *p* exceeds 5 × stitch_spacing, a junction candidate
+    is recorded at the midpoint of (p, q).
+
+    Nearby candidates (within 2 × stitch_spacing) are clustered into
+    single junction nodes.  The centroid of each cluster is returned.
+
+    Parameters
+    ----------
+    polygon : shapely.geometry.Polygon
+        The polygon to scan for narrow waists.
+    stitch_spacing : float
+        Nominal stitch spacing in pixels (default 20.0 for 6-ply satin).
+
+    Returns
+    -------
+    list of (float, float)
+        Junction midpoints, each as an (x, y) tuple.
+    """
+    coords = list(polygon.exterior.coords)
+    if len(coords) > 1 and coords[0] == coords[-1]:
+        coords = coords[:-1]
+    n = len(coords)
+    if n < 5:
+        return []
+
+    candidates = []
+
+    for i in range(n):
+        p = coords[i]
+
+        # Find closest non-adjacent point
+        best_j = -1
+        best_dist = float("inf")
+        for j in range(n):
+            # Skip adjacent (±2 indices, and wrap-around adjacency)
+            if abs(i - j) <= 2:
+                continue
+            # Skip wrap-around adjacent (e.g., i=0, j=n-1)
+            if abs(i - j) >= n - 2:
+                continue
+
+            q = coords[j]
+            dist = math.hypot(p[0] - q[0], p[1] - q[1])
+            if dist < best_dist:
+                best_dist = dist
+                best_j = j
+
+        if best_j < 0 or best_dist >= 3.0 * stitch_spacing:
+            continue
+
+        q = coords[best_j]
+
+        # Width check: is the shape wide at p?
+        width = _local_width_at_point(polygon, p)
+        if width > 5.0 * stitch_spacing:
+            mid_x = (p[0] + q[0]) / 2.0
+            mid_y = (p[1] + q[1]) / 2.0
+            candidates.append((mid_x, mid_y))
+
+    if not candidates:
+        return []
+
+    # Cluster nearby candidates
+    clusters = _cluster_points(candidates, 2.0 * stitch_spacing)
+
+    # Return centroid of each cluster
+    junctions = []
+    for cluster in clusters:
+        if not cluster:
+            continue
+        cx = sum(pt[0] for pt in cluster) / len(cluster)
+        cy = sum(pt[1] for pt in cluster) / len(cluster)
+        junctions.append((cx, cy))
+
+    return junctions
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Geometry construction from SVG paths
 # ─────────────────────────────────────────────────────────────────────────────
 

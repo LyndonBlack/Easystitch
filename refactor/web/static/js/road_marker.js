@@ -615,16 +615,30 @@ const RoadMarker = (function() {
       hitCircle.setAttribute('stroke', 'transparent');
       g.appendChild(hitCircle);
 
-      // Visible circle
-      const circle = document.createElementNS(svgNS, 'circle');
-      circle.setAttribute('cx', String(pos[0]));
-      circle.setAttribute('cy', String(pos[1]));
-      circle.setAttribute('r', node.type === 'endpoint' ? '6' : '4');
-      circle.setAttribute('fill', color);
-      circle.setAttribute('stroke', '#111');
-      circle.setAttribute('stroke-width', '1.2');
-      circle.setAttribute('pointer-events', 'none');
-      g.appendChild(circle);
+      // Visible circle or diamond (diamond for junction/user_cut nodes)
+      if (node.type === 'user_cut') {
+        // Diamond shape for junction / split nodes
+        const diamond = document.createElementNS(svgNS, 'polygon');
+        const r = 6;
+        const cx = pos[0], cy = pos[1];
+        diamond.setAttribute('points',
+          `${cx},${cy - r} ${cx + r},${cy} ${cx},${cy + r} ${cx - r},${cy}`);
+        diamond.setAttribute('fill', '#ff8844');
+        diamond.setAttribute('stroke', '#111');
+        diamond.setAttribute('stroke-width', '1.2');
+        diamond.setAttribute('pointer-events', 'none');
+        g.appendChild(diamond);
+      } else {
+        const circle = document.createElementNS(svgNS, 'circle');
+        circle.setAttribute('cx', String(pos[0]));
+        circle.setAttribute('cy', String(pos[1]));
+        circle.setAttribute('r', node.type === 'endpoint' ? '6' : '4');
+        circle.setAttribute('fill', color);
+        circle.setAttribute('stroke', '#111');
+        circle.setAttribute('stroke-width', '1.2');
+        circle.setAttribute('pointer-events', 'none');
+        g.appendChild(circle);
+      }
 
       // Label
       const text = document.createElementNS(svgNS, 'text');
@@ -677,21 +691,32 @@ const RoadMarker = (function() {
     const lg = document.createElementNS(svgNS, 'g');
     lg.setAttribute('transform', `translate(${viewBoxX + 8}, ${viewBoxY + 14})`);
     [
-      {label: 'endpoint', color: NODE_COLORS.endpoint},
-      {label: 'sharp_corner', color: NODE_COLORS.sharp_corner},
-      {label: 'pri 0', color: EDGE_COLORS[0]},
-      {label: 'pri 1', color: EDGE_COLORS[1]},
-      {label: 'pri 2', color: EDGE_COLORS[2]},
+      {label: 'endpoint', color: NODE_COLORS.endpoint, shape: 'circle'},
+      {label: 'sharp_corner', color: NODE_COLORS.sharp_corner, shape: 'circle'},
+      {label: 'junction', color: '#ff8844', shape: 'diamond'},
+      {label: 'pri 0', color: EDGE_COLORS[0], shape: 'circle'},
+      {label: 'pri 1', color: EDGE_COLORS[1], shape: 'circle'},
+      {label: 'pri 2', color: EDGE_COLORS[2], shape: 'circle'},
     ].forEach((item, i) => {
       const g = document.createElementNS(svgNS, 'g');
-      const circ = document.createElementNS(svgNS, 'circle');
-      circ.setAttribute('cx', '6');
-      circ.setAttribute('cy', String(i * 14));
-      circ.setAttribute('r', '4');
-      circ.setAttribute('fill', item.color);
-      circ.setAttribute('stroke', '#111');
-      circ.setAttribute('stroke-width', '0.8');
-      g.appendChild(circ);
+      if (item.shape === 'diamond') {
+        const diamond = document.createElementNS(svgNS, 'polygon');
+        const r = 4;
+        diamond.setAttribute('points', `6,${i * 14 - r} ${6 + r},${i * 14} 6,${i * 14 + r} ${6 - r},${i * 14}`);
+        diamond.setAttribute('fill', item.color);
+        diamond.setAttribute('stroke', '#111');
+        diamond.setAttribute('stroke-width', '0.8');
+        g.appendChild(diamond);
+      } else {
+        const circ = document.createElementNS(svgNS, 'circle');
+        circ.setAttribute('cx', '6');
+        circ.setAttribute('cy', String(i * 14));
+        circ.setAttribute('r', '4');
+        circ.setAttribute('fill', item.color);
+        circ.setAttribute('stroke', '#111');
+        circ.setAttribute('stroke-width', '0.8');
+        g.appendChild(circ);
+      }
       const lt = document.createElementNS(svgNS, 'text');
       lt.setAttribute('x', '14');
       lt.setAttribute('y', String(i * 14 + 4));
@@ -893,6 +918,41 @@ const RoadMarker = (function() {
     return document.getElementById('road-graph-modal');
   }
 
+  // ── Auto-Detect Junctions ─────────────────────────────────────
+
+  async function autoDetect() {
+    if (!currentPathId) {
+      showToast('No path loaded. Select a SATIN path first.', 'error');
+      return;
+    }
+    if (!currentRoadData || !currentRoadData.edges || Object.keys(currentRoadData.edges).length === 0) {
+      showToast('No edges in current graph. Build the road graph first.', 'error');
+      return;
+    }
+
+    setStatus('Auto-detecting junctions...');
+    const result = await apiCall('/api/roads/auto_detect', {
+      path_id: currentPathId,
+      stitch_spacing: 20.0,
+    });
+
+    if (result.error) {
+      showToast('Auto-detect error: ' + result.error, 'error');
+      setStatus('Auto-detect error: ' + result.error);
+      return;
+    }
+
+    currentRoadData = result;
+    refreshOverlay();
+
+    // Count new nodes/edges for feedback
+    const nodeCount = Object.keys(result.nodes || {}).length;
+    const edgeCount = Object.keys(result.edges || {}).length;
+    const rungCount = Object.keys(result.rungs || {}).length;
+    showToast('Auto-detect complete: ' + nodeCount + ' nodes, ' + edgeCount + ' edges, ' + rungCount + ' rungs', 'success');
+    setStatus('Auto-detect complete. Junction nodes shown as orange diamonds.');
+  }
+
   return {
     async showRoadGraph(pathId) {
       if (isLoading) return;
@@ -977,5 +1037,8 @@ const RoadMarker = (function() {
     // Expose tool control
     setTool: setTool,
     getTool: function() { return currentTool; },
+
+    // Expose auto-detect
+    autoDetect: autoDetect,
   };
 })();

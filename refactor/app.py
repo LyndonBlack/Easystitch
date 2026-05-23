@@ -564,6 +564,29 @@ def create_app(initial_input: str | None, output_dir: str) -> Flask:
             import traceback
             return jsonify({"ok": False, "error": str(e), "trace": traceback.format_exc()})
 
+    @app.route("/api/roads/auto_detect", methods=["POST"])
+    def api_roads_auto_detect():
+        try:
+            body = request.get_json() or {}
+            path_id = body.get("path_id")
+            stitch_spacing = body.get("stitch_spacing", 20.0)
+            if not path_id:
+                return jsonify({"ok": False, "error": "Missing path_id"})
+
+            polygon = _get_polygon_for_path(path_id)
+            current = _get_road_state(path_id)
+
+            from easystitch_core.road_marker import auto_detect_junctions
+            updated = auto_detect_junctions(current, polygon, float(stitch_spacing))
+            app.config["_ROAD_STATE"][path_id] = updated
+
+            result = updated.to_dict()
+            result["path_id"] = path_id
+            return jsonify(result)
+        except Exception as e:
+            import traceback
+            return jsonify({"ok": False, "error": str(e), "trace": traceback.format_exc()})
+
     return app
 
 

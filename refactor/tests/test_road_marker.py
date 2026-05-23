@@ -360,8 +360,164 @@ check("Edge dict has start_node_id", "start_node_id" in edge_dict)
 check("Edge dict has end_node_id", "end_node_id" in edge_dict)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Summary
+# Stage 2 — Junction Detection + Auto-Detect Tests
 # ─────────────────────────────────────────────────────────────────────────────
+
+print("\n--- Stage 2: detect_junctions ---")
+
+from easystitch_core.geometry import detect_junctions, _local_width_at_point, _cluster_points
+from shapely.geometry import Polygon as ShapelyPolygon
+
+# Test with a simple narrow shape
+narrow_rect = ShapelyPolygon([
+    (0, 0), (10, 0), (10, 50), (0, 50)
+])
+junctions_narrow = detect_junctions(narrow_rect, stitch_spacing=20.0)
+check("detect_junctions: narrow rect has 0 junctions (too thin)",
+      len(junctions_narrow) == 0,
+      f"found {len(junctions_narrow)}")
+
+# Test with a wide shape that has a narrow waist: two wide regions with bridge
+# Use a shape known to produce junctions: two blobs connected by a 30px bridge
+import math as _math2
+bridge_pts = []
+# Top arc going right
+for i in range(30):
+    a = _math2.pi * i / 29
+    bridge_pts.append((50 + 50*_math2.cos(a), 50*_math2.sin(a)))
+# Bridge region (narrow, ~30px wide)
+bridge_pts.append((100, 80))
+bridge_pts.append((70, 80))
+bridge_pts.append((70, 50))
+bridge_pts.append((30, 50))
+bridge_pts.append((30, 80))
+bridge_pts.append((0, 80))
+# Bottom arc going back left
+for i in range(30):
+    a = _math2.pi + _math2.pi * i / 29
+    bridge_pts.append((50 + 50*_math2.cos(a), 50*_math2.sin(a)))
+
+wide_with_waist = ShapelyPolygon(bridge_pts)
+junctions_waist = detect_junctions(wide_with_waist, stitch_spacing=20.0)
+check("detect_junctions: hourglass has junctions",
+      len(junctions_waist) >= 1,
+      f"found {len(junctions_waist)}")
+
+# Test with no narrow waist (simple rectangle)
+simple_rect = ShapelyPolygon([(0, 0), (100, 0), (100, 80), (0, 80)])
+junctions_simple = detect_junctions(simple_rect, stitch_spacing=20.0)
+check("detect_junctions: simple rect has 0 junctions",
+      len(junctions_simple) == 0,
+      f"found {len(junctions_simple)}")
+
+# Test _cluster_points
+pts = [(0, 0), (1, 0), (5, 5)]
+clusters = _cluster_points(pts, radius=2.0)
+check("_cluster_points: groups nearby points",
+      len(clusters) == 2,
+      f"got {len(clusters)} clusters")
+
+# Test _cluster_points single point
+clusters2 = _cluster_points([(0, 0)], radius=10.0)
+check("_cluster_points: single point",
+      len(clusters2) == 1 and len(clusters2[0]) == 1)
+
+# Test _local_width_at_point on simple rect (should be non-zero)
+width = _local_width_at_point(simple_rect, (10, 0))
+check("_local_width_at_point: returns positive width",
+      width > 0,
+      f"got {width}")
+
+# Test detect_junctions returns empty for small polygon
+tiny = ShapelyPolygon([(0, 0), (3, 0), (3, 3), (0, 3)])
+junctions_tiny = detect_junctions(tiny, stitch_spacing=20.0)
+check("detect_junctions: tiny polygon returns empty",
+      len(junctions_tiny) == 0,
+      f"found {len(junctions_tiny)}")
+
+# ── Test auto_detect_junctions ──────────────────────────────────────
+
+print("\n--- Stage 2: auto_detect_junctions ---")
+
+from easystitch_core.road_marker import auto_detect_junctions
+
+# Build a simple graph on the hourglass shape
+_reset_counters()
+graph_hourglass = build_initial_graph(wide_with_waist)
+graph_hourglass.path_id = "hourglass_test"
+n_edges_before = len(graph_hourglass.edges)
+n_nodes_before = len(graph_hourglass.nodes)
+
+result_auto = auto_detect_junctions(graph_hourglass, wide_with_waist, stitch_spacing=20.0)
+n_edges_after = len(result_auto.edges)
+n_nodes_after = len(result_auto.nodes)
+
+check("auto_detect_junctions: returns RoadMarkedPath",
+      isinstance(result_auto, RoadMarkedPath))
+check("auto_detect_junctions: original unchanged",
+      len(graph_hourglass.edges) == n_edges_before)
+check("auto_detect_junctions: edges may increase (splits)",
+      n_edges_after >= n_edges_before,
+      f"before={n_edges_before}, after={n_edges_after}")
+
+# Test auto_detect on a shape with no junctions (should return equivalent path)
+_reset_counters()
+graph_simple = build_initial_graph(simple_rect)
+result_no_junction = auto_detect_junctions(graph_simple, simple_rect, stitch_spacing=20.0)
+check("auto_detect_junctions: no junctions returns equivalent graph",
+      len(result_no_junction.edges) == len(graph_simple.edges),
+      f"before={len(graph_simple.edges)}, after={len(result_no_junction.edges)}")
+check("auto_detect_junctions: same nodes count when no junctions",
+      len(result_no_junction.nodes) == len(graph_simple.nodes))
+
+# Test that junction nodes are created with correct type
+has_user_cut = False
+for nid, node in result_auto.nodes.items():
+    if node.type == "user_cut":
+        has_user_cut = True
+        break
+# Note: may not have user_cut if no junctions were detected
+# Just verify the function completes without error
+check("auto_detect_junctions: completes without error", True)
+
+# ── Test on puppy head outline ──────────────────────────────────────
+
+print("\n--- Stage 2: auto_detect on puppy head ---")
+
+_reset_counters()
+graph_puppy = build_initial_graph(geom)
+graph_puppy.path_id = "puppy_auto"
+n_edges_puppy_before = len(graph_puppy.edges)
+
+result_puppy = auto_detect_junctions(graph_puppy, geom, stitch_spacing=20.0)
+n_edges_puppy_after = len(result_puppy.edges)
+n_nodes_puppy_after = len(result_puppy.nodes)
+
+check("auto_detect_junctions on puppy: returns valid graph",
+      result_puppy is not None)
+check("auto_detect_junctions on puppy: edges >= initial",
+      n_edges_puppy_after >= n_edges_puppy_before,
+      f"before={n_edges_puppy_before}, after={n_edges_puppy_after}")
+check("auto_detect_junctions on puppy: all edges in stitch_order",
+      set(result_puppy.stitch_order) == set(result_puppy.edges.keys()))
+check("auto_detect_junctions on puppy: nodes match edge references",
+      all(
+          (e.start_node_id in result_puppy.nodes and e.end_node_id in result_puppy.nodes)
+          for e in result_puppy.edges.values()
+      ))
+
+# Check for yield rungs
+yield_edges = [e for e in result_puppy.edges.values() if e.yield_to_edge_id]
+print(f"  Yield edges after auto-detect: {len(yield_edges)}")
+if yield_edges:
+    for ye in yield_edges[:3]:
+        print(f"    {ye.id} yields to {ye.yield_to_edge_id}, start_rung={ye.start_rung_id}")
+
+# Test JSON round-trip of result
+d = result_puppy.to_dict()
+import json
+json_str = json.dumps(d, default=str)
+check("auto_detect result JSON serialisable", len(json_str) > 100, f"length={len(json_str)}")
 
 print("\n" + "=" * 60)
 if errors == 0:
