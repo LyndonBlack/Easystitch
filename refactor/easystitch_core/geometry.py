@@ -1191,6 +1191,116 @@ def distance_point_to_segment(px, py, ax, ay, bx, by):
     return (math.hypot(px - near_x, py - near_y), None)
 
 
+def compute_centerline(polygon: Polygon, sample_spacing: float = 8.0) -> list[tuple[float, float]]:
+    """
+    Compute the centerline of a satin-path polygon by sampling the
+    exterior boundary and casting normal rays inward to find the
+    corresponding opposite boundary point.  The midpoint of each
+    ray is on the centerline.
+
+    Works for ring polygons (thick strokes) and simple polygons.
+    Returns a list of (x, y) tuples forming the centerline polyline.
+    """
+    import math
+
+    coords = list(polygon.exterior.coords)
+    if len(coords) < 3:
+        return []
+
+    boundary = LineString(coords)
+    total_len = boundary.length
+    if total_len < 1.0:
+        return []
+
+    n_samples = max(3, int(total_len / sample_spacing))
+    half_len = max(polygon.bounds[2] - polygon.bounds[0],
+                   polygon.bounds[3] - polygon.bounds[1]) * 1.5
+
+    midpoints: list[tuple[float, float]] = []
+    for i in range(n_samples):
+        t = i / n_samples
+        dist = t * total_len
+        pt = boundary.interpolate(dist)
+
+        # Local tangent via two nearby points
+        eps = min(2.0, total_len * 0.003)
+        t1_pt = boundary.interpolate(max(0.0, dist - eps))
+        t2_pt = boundary.interpolate(min(total_len, dist + eps))
+        dx, dy = t2_pt.x - t1_pt.x, t2_pt.y - t1_pt.y
+        mag = math.hypot(dx, dy)
+        if mag < 1e-9:
+            continue
+        nx, ny = -dy / mag, dx / mag  # normal (rotate tangent 90° CCW)
+
+        # Cast ray inward through the polygon
+        ray = LineString([
+            (pt.x - nx * half_len, pt.y - ny * half_len),
+            (pt.x + nx * half_len, pt.y + ny * half_len),
+        ])
+
+        try:
+            inter = polygon.intersection(ray)
+        except Exception:
+            continue
+
+        from shapely.geometry import MultiLineString, GeometryCollection
+
+        segments = []
+        if isinstance(inter, LineString):
+            segments = [inter]
+        elif isinstance(inter, MultiLineString):
+            segments = list(inter.geoms)
+        elif isinstance(inter, GeometryCollection):
+            for g in inter.geoms:
+                if isinstance(g, LineString):
+                    segments.append(g)
+        elif hasattr(inter, 'geoms'):
+            for g in inter.geoms:
+                if isinstance(g, LineString):
+                    segments.append(g)
+
+        if not segments:
+            continue
+
+        # Pick the segment closest to pt
+        p = Point(pt.x, pt.y)
+        segments.sort(key=lambda s: s.distance(p))
+        seg = segments[0]
+        seg_coords = list(seg.coords)
+        if len(seg_coords) < 2:
+            continue
+
+        # Midpoint of the segment endpoints
+        mx = (seg_coords[0][0] + seg_coords[-1][0]) / 2
+        my = (seg_coords[0][1] + seg_coords[-1][1]) / 2
+
+        # Ensure the midpoint is inside the polygon
+        if not polygon.contains(Point(mx, my)):
+            seg_mid = seg.interpolate(0.5, normalized=True)
+            mx, my = seg_mid.x, seg_mid.y
+
+        midpoints.append((mx, my))
+
+    # Remove near-duplicate consecutive points
+    if not midpoints:
+        return []
+
+    cleaned = [midpoints[0]]
+    for mp in midpoints[1:]:
+        d = math.hypot(mp[0] - cleaned[-1][0], mp[1] - cleaned[-1][1])
+        if d > 1.0:
+            cleaned.append(mp)
+
+    # Close the loop if start/end are close (closed shape)
+    if len(cleaned) >= 3:
+        d_close = math.hypot(cleaned[0][0] - cleaned[-1][0],
+                             cleaned[0][1] - cleaned[-1][1])
+        if d_close < sample_spacing * 2:
+            cleaned.append(cleaned[0])
+
+    return cleaned
+
+
 # Late-bound imports from sibling modules to avoid circular imports at load time.
 # These are imported at module level but resolved on first access via lazy
 # imports below.  The monolith originally defined these at the top level

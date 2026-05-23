@@ -293,78 +293,223 @@ def _subdivide_long_edges(nodes: dict, edges: dict, stitch_order: list,
         del edges[eid]
 
 
-def build_initial_graph(polygon: Polygon) -> RoadMarkedPath:
+def _merge_close_junctions(nodes: dict, edges: dict, stitch_order: list,
+                          radius: float = 15.0):
     """
-    Stage 0A graph builder.
-
-    Detects sharp corners on ALL polygon boundaries (exterior + every
-    interior hole) and builds one combined road-marking graph.  Every
-    boundary becomes its own connected sub-graph with unique node/edge
-    IDs.  No junction detection — just corners and edges.
-
-    The exterior is skipped only when it appears to be a canvas
-    bounding-box rectangle (area > 90 % of bbox area).
+    Merge junction nodes that are within `radius` pixels of each other.
+    The surviving node gets the lowest ID; all edges referencing merged
+    nodes are updated to point to the survivor.
     """
-    # ── collect boundaries ───────────────────────────────────────────────
-    boundaries: list[tuple[str, Polygon, list]] = []  # (label, poly, coords)
+    # Collect junction nodes
+    jnodes = [(nid, n) for nid, n in nodes.items() if n.type == "junction"]
+    if len(jnodes) < 2:
+        return
 
-    # Exterior
-    ext_coords = list(polygon.exterior.coords)
-    minx, miny, maxx, maxy = polygon.bounds
-    bbox_area = (maxx - minx) * (maxy - miny)
-    is_bbox = (bbox_area > 0 and polygon.area / bbox_area > 0.90)
+    # Build merge groups (connected components within radius)
+    parents = {}
+    for nid, n in jnodes:
+        parents[nid] = nid
 
-    if not is_bbox:
-        boundaries.append(("ext", polygon, ext_coords))
+    def find(x):
+        while parents.get(x, x) != x:
+            parents[x] = parents.get(parents[x], parents[x])
+            x = parents[x]
+        return x
 
-    # Interior holes
-    if polygon.interiors:
-        for hole in polygon.interiors:
-            hole_coords = list(hole.coords)
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            if ra < rb:
+                parents[rb] = ra
+            else:
+                parents[ra] = rb
+
+    for i in range(len(jnodes)):
+        ni, nd = jnodes[i]
+        for j in range(i + 1, len(jnodes)):
+            nj, njd = jnodes[j]
+            d = math.hypot(nd.position[0] - njd.position[0],
+                           nd.position[1] - njd.position[1])
+            if d < radius:
+                union(ni, nj)
+
+    # Build replacement map: each node ID maps to its surviving rep
+    rep = {}
+    for nid in parents:
+        rep[nid] = find(nid)
+
+    # If all junctions are in the same group, nothing to merge
+    unique_reps = set(rep.values())
+    if len(unique_reps) == len(jnodes):
+        return
+
+    # Average position for each group
+    group_positions = {}
+    for nid, n in jnodes:
+        g = rep[nid]
+        if g not in group_positions:
+            group_positions[g] = {"x": 0.0, "y": 0.0, "count": 0}
+        group_positions[g]["x"] += n.position[0]
+        group_positions[g]["y"] += n.position[1]
+        group_positions[g]["count"] += 1
+
+    for g, p in group_positions.items():
+        nodes[g].position = (p["x"] / p["count"], p["y"] / p["count"])
+
+    # Update edges to use surviving node
+    for eid, edge in edges.items():
+        if edge.start_node_id in rep:
+            edge.start_node_id = rep[edge.start_node_id]
+        if edge.end_node_id in rep:
+            edge.end_node_id = rep[edge.end_node_id]
+
+    # Remove merged-away nodes
+    for nid in list(nodes.keys()):
+        if nid in rep and rep[nid] != nid:
+            del nodes[nid]
+
+
+def _dedup_points(points: list, radius: float = 5.0) -> list:
+    """Remove near-duplicate 2D points within radius."""
+    if not points:
+        return []
+    kept = [points[0]]
+    for p in points[1:]:
+        if all(math.hypot(p[0] - k[0], p[1] - k[1]) > radius for k in kept):
+            kept.append(p)
+    return kept
+
+
+def build_initial_graph(polygons: dict[str, Polygon]) -> RoadMarkedPath:
+    """
+    Stage 0A graph builder — centerline-based.
+
+    Computes the centerline for each satin-path polygon.  Finds
+    junctions where centerlines from DIFFERENT paths cross.  Breaks
+    each centerline at junctions into edges (one per segment between
+    junction points).
+
+    Returns a RoadMarkedPath with all nodes (junctions) and edges.
+    No boundary outlines — the graph IS the centerlines.
+    """
+    from .geometry import compute_centerline
+    from shapely.geometry import MultiPoint
+
+    # ── 1. Compute centerlines ─────────────────────────────────────────
+    centerlines: dict[str, LineString] = {}
+    for path_id, poly in polygons.items():
+        if poly.is_empty:
+            continue
+        cl_pts = compute_centerline(poly)
+        if len(cl_pts) >= 2:
+            centerlines[path_id] = LineString(cl_pts)
+
+    if not centerlines:
+        return RoadMarkedPath(path_id="", rungs={}, nodes={}, edges={},
+                              stitch_order=[], boundary_coords=[])
+
+    # ── 2. Find junctions where different centerlines cross ─────────────
+    raw_junctions: list[tuple[float, float]] = []
+    path_ids = sorted(centerlines.keys())
+    for i in range(len(path_ids)):
+        for j in range(i + 1, len(path_ids)):
+            cl_a = centerlines[path_ids[i]]
+            cl_b = centerlines[path_ids[j]]
             try:
-                hp = Polygon(hole_coords)
-                if hp.area > 0:
-                    boundaries.append(("hole", hp, hole_coords))
+                inter = cl_a.intersection(cl_b)
             except Exception:
                 continue
+            if inter.is_empty:
+                continue
+            pts = []
+            if isinstance(inter, Point):
+                pts = [inter]
+            elif isinstance(inter, MultiPoint):
+                pts = list(inter.geoms)
+            elif hasattr(inter, 'geoms'):
+                pts = [g for g in inter.geoms if isinstance(g, Point)]
+            for pt in pts:
+                raw_junctions.append((float(pt.x), float(pt.y)))
 
-    # If nothing collected (bbox exterior + no valid holes), use exterior anyway
-    if not boundaries:
-        boundaries.append(("ext", polygon, ext_coords))
+    junctions = _dedup_points(raw_junctions, radius=15.0)
 
-    # ── build sub-graphs for each boundary ───────────────────────────────
+    # ── 3. Build nodes + edges from each centerline ───────────────────
     all_nodes: dict = {}
     all_edges: dict = {}
-    all_stitch_order: list = []
-    all_boundary_coords: list = []  # list of boundaries, each a list of [x,y] pairs
+    stitch_order: list = []
+    node_idx = 0
+    edge_idx = 0
 
-    node_offset = 0
-    edge_offset = 0
+    for path_id, cl in centerlines.items():
+        # Find junction points on this centerline (within 2px tolerance)
+        hits = []
+        for jx, jy in junctions:
+            jpt = Point(jx, jy)
+            if cl.distance(jpt) < 3.0:
+                proj_dist = cl.project(jpt)
+                proj_pt = cl.interpolate(proj_dist)
+                hits.append((float(proj_pt.x), float(proj_pt.y), proj_dist))
 
-    for label, bound_poly, bound_coords in boundaries:
-        nodes, edges, s_order, render_coords = _process_boundary(
-            bound_poly, bound_coords, node_offset, edge_offset
-        )
-        if nodes:
-            all_nodes.update(nodes)
-            all_edges.update(edges)
-            all_stitch_order.extend(s_order)
-            all_boundary_coords.append(render_coords)
-            node_offset += len(nodes)
-            edge_offset += len(edges)
+        # Sort hits by distance along the centerline
+        hits.sort(key=lambda h: h[2])
 
-    # ── subdivide long edges for better shape coverage ───────────────────
-    # Gentle curves get few corner nodes; add evenly-spaced nodes on
-    # edges longer than max_edge_len to give the user enough anchor points.
-    _subdivide_long_edges(all_nodes, all_edges, all_stitch_order, max_edge_len=80.0)
+        if not hits:
+            # No junctions on this centerline — one edge from start to end
+            coords = list(cl.coords)
+            start_pt = (float(coords[0][0]), float(coords[0][1]))
+            end_pt = (float(coords[-1][0]), float(coords[-1][1]))
+            n_start = f"n{node_idx}"; node_idx += 1
+            n_end   = f"n{node_idx}"; node_idx += 1
+            all_nodes[n_start] = Node(id=n_start, type="endpoint", position=start_pt)
+            all_nodes[n_end]   = Node(id=n_end,   type="endpoint", position=end_pt)
+            eid = f"e{edge_idx}"; edge_idx += 1
+            all_edges[eid] = Edge(id=eid, priority=0,
+                                  start_node_id=n_start, end_node_id=n_end)
+            stitch_order.append(eid)
+            continue
+
+        # Build nodes at junction points + endpoints
+        coords = list(cl.coords)
+        start_pt = (float(coords[0][0]), float(coords[0][1]))
+        end_pt = (float(coords[-1][0]), float(coords[-1][1]))
+
+        seg_nodes = []
+        # Start node
+        nid = f"n{node_idx}"; node_idx += 1
+        all_nodes[nid] = Node(id=nid, type="endpoint", position=start_pt)
+        seg_nodes.append(nid)
+        # Junction nodes
+        for bx, by, _ in hits:
+            nid = f"n{node_idx}"; node_idx += 1
+            all_nodes[nid] = Node(id=nid, type="junction", position=(bx, by))
+            seg_nodes.append(nid)
+        # End node
+        nid = f"n{node_idx}"; node_idx += 1
+        all_nodes[nid] = Node(id=nid, type="endpoint", position=end_pt)
+        seg_nodes.append(nid)
+
+        # Edges between consecutive nodes
+        for k in range(len(seg_nodes) - 1):
+            eid = f"e{edge_idx}"; edge_idx += 1
+            all_edges[eid] = Edge(
+                id=eid, priority=0,
+                start_node_id=seg_nodes[k],
+                end_node_id=seg_nodes[k + 1],
+            )
+            stitch_order.append(eid)
+
+    # ── 4. Merge nearby junction nodes across centerlines ──────────────
+    # When two centerlines cross at nearly the same point, their
+    # junction nodes should be merged into one shared node.
+    _merge_close_junctions(all_nodes, all_edges, stitch_order, radius=15.0)
 
     return RoadMarkedPath(
         path_id="",
         rungs={},
         nodes=all_nodes,
         edges=all_edges,
-        stitch_order=all_stitch_order,
-        boundary_coords=all_boundary_coords,
+        stitch_order=stitch_order,
+        boundary_coords=[],
     )
 
 

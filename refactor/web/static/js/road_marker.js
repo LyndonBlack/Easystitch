@@ -874,10 +874,12 @@ const RoadMarker = (function() {
 
   async function fetchRoadGraph(pathId) {
     try {
+      const body = {};
+      if (pathId) body.path_id = pathId;
       const res = await fetch('/api/roads/build_graph', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({path_id: pathId}),
+        body: JSON.stringify(body),
       });
       const data = await res.json();
       if (!data.nodes && !data.ok && data.error) {
@@ -1014,20 +1016,22 @@ const RoadMarker = (function() {
 
       if (currentRoadData) {
         renderDebugOverlay(overlaySvg, currentRoadData);
-      } else if (currentPathId) {
-        // Data not cached yet — fetch it now
+      } else {
         overlaySvg.innerHTML = '<text x="50%" y="50%" text-anchor="middle" fill="#888" font-size="16">Loading road graph...</text>';
         (async () => {
           const data = await fetchRoadGraph(currentPathId);
           if (data && !data.error) {
             currentRoadData = data;
+            if (data.path_count) {
+              showToast('Loaded ' + data.path_count + ' paths, ' +
+                       Object.keys(data.nodes || {}).length + ' nodes, ' +
+                       Object.keys(data.edges || {}).length + ' edges', 'info');
+            }
             renderDebugOverlay(overlaySvg, data);
           } else {
-            overlaySvg.innerHTML = '<text x="50%" y="50%" text-anchor="middle" fill="#c44" font-size="16">Failed to load: ' + (data?.error || 'unknown') + '</text>';
+            overlaySvg.innerHTML = '<text x="50%" y="50%" text-anchor="middle" fill="#c44" font-size="16">Failed: ' + (data?.error || 'unknown') + '</text>';
           }
         })();
-      } else {
-        overlaySvg.innerHTML = '<text x="50%" y="50%" text-anchor="middle" fill="#888" font-size="16">Select a SATIN path first, then click Show Road Graph</text>';
       }
     },
 

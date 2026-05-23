@@ -359,43 +359,52 @@ def create_app(initial_input: str | None, output_dir: str) -> Flask:
     def api_roads_build_graph():
         try:
             body = request.get_json() or {}
-            path_id = body.get("path_id")
-            if not path_id:
-                return jsonify({"ok": False, "error": "Missing path_id"})
+            path_id = body.get("path_id")  # optional — if omitted, uses ALL satin paths
 
-            # Use cached state helper — builds initial graph on first call
-            graph = _get_road_state(path_id)
-
-            # Always rebuild from scratch for explicit build_graph calls
-            # (user may want to reset after manual edits)
             from easystitch_core.geometry import object_fill_geometry
             from shapely.geometry import MultiPolygon
 
             structure = app.config.get("LAST_STRUCTURE")
-            obj = None
-            for o in structure["objects"]:
-                if o.get("id") == path_id:
-                    obj = o
-                    break
 
-            geom = object_fill_geometry(obj)
-            if isinstance(geom, MultiPolygon):
-                if geom.is_empty:
-                    return jsonify({"ok": False, "error": "Path geometry is empty."})
-                geom = max(geom.geoms, key=lambda g: g.area)
+            if path_id:
+                # Single-path mode (backward compat)
+                obj = None
+                for o in structure["objects"]:
+                    if o.get("id") == path_id:
+                        obj = o
+                        break
+                if obj is None:
+                    return jsonify({"ok": False, "error": f"Path '{path_id}' not found."})
+                geom = object_fill_geometry(obj)
+                if isinstance(geom, MultiPolygon):
+                    if geom.is_empty:
+                        return jsonify({"ok": False, "error": "Path geometry is empty."})
+                    geom = max(geom.geoms, key=lambda g: g.area)
+                polygons = {path_id: geom}
+            else:
+                # All-paths mode: collect every object that has a fill geometry
+                polygons = {}
+                for o in structure["objects"]:
+                    try:
+                        geom = object_fill_geometry(o)
+                        if isinstance(geom, MultiPolygon):
+                            geom = max(geom.geoms, key=lambda g: g.area)
+                        if not geom.is_empty:
+                            polygons[o.get("id", "")] = geom
+                    except Exception:
+                        continue
 
             _reset_counters()
-            graph = build_initial_graph(geom)
+            graph = build_initial_graph(polygons)
 
-            # Cache the fresh graph
-            app.config["_ROAD_STATE"][path_id] = graph
-
-            # Detect ring polygons (exterior = canvas bounds, holes = actual shape)
-            has_holes = bool(getattr(geom, 'interiors', ()))
+            # Cache under a single key for all-paths mode
+            cache_key = path_id or "__all__"
+            app.config["_ROAD_STATE"][cache_key] = graph
 
             result = graph.to_dict()
-            result["path_id"] = path_id
-            result["has_holes"] = has_holes
+            result["path_id"] = cache_key
+            result["has_holes"] = any(bool(getattr(p, 'interiors', ())) for p in polygons.values())
+            result["path_count"] = len(polygons)
             return jsonify(result)
         except Exception as e:
             import traceback
