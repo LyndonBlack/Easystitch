@@ -704,21 +704,25 @@ const RoadMarker = (function() {
     });
     svg.appendChild(lg);
 
-    container.appendChild(svg);
+    if (container !== svg) {
+      container.appendChild(svg);
+    }
 
-    // Ring polygon info note
-    let ringNote = container.querySelector('.ring-polygon-note');
-    if (roadData.has_holes) {
-      if (!ringNote) {
-        ringNote = document.createElement('div');
-        ringNote.className = 'ring-polygon-note';
-        container.appendChild(ringNote);
+    // Ring polygon info note (only for div containers, not SVG)
+    if (container !== svg) {
+      let ringNote = container.querySelector('.ring-polygon-note');
+      if (roadData.has_holes) {
+        if (!ringNote) {
+          ringNote = document.createElement('div');
+          ringNote.className = 'ring-polygon-note';
+          container.appendChild(ringNote);
+        }
+        ringNote.innerHTML = '&#9432; Ring polygon detected &mdash; use <b>Split</b> tool to separate branches (e.g., ears, limbs).';
+        ringNote.style.cssText = 'padding:6px 10px;margin-top:6px;background:#2a2a3a;color:#aac;font-size:0.78rem;' +
+          'border-left:3px solid #4488ff;border-radius:2px;';
+      } else {
+        if (ringNote) ringNote.remove();
       }
-      ringNote.innerHTML = '&#9432; Ring polygon detected &mdash; use <b>Split</b> tool to separate branches (e.g., ears, limbs).';
-      ringNote.style.cssText = 'padding:6px 10px;margin-top:6px;background:#2a2a3a;color:#aac;font-size:0.78rem;' +
-        'border-left:3px solid #4488ff;border-radius:2px;';
-    } else {
-      if (ringNote) ringNote.remove();
     }
 
     // Attach click handlers after rendering
