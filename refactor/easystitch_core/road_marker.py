@@ -134,17 +134,27 @@ def build_initial_graph(polygon: Polygon) -> RoadMarkedPath:
     from .geometry import detect_sharp_corners
 
     # ── choose the right boundary for corner detection ──────────────────
-    # For ring polygons (thick outlines with interior holes), the exterior
-    # is often just the canvas bounding box.  The actual shape detail is
-    # in the interior boundaries.  Try each hole and pick the one that
-    # produces the most detected corners (most geometric detail).
+    # Try the exterior first (it is the full shape outline for ring
+    # polygons like thick SVG strokes).  Only fall back to interior
+    # holes if the exterior has fewer than 3 corners (likely a canvas
+    # bounding-box exterior for ring polygons).
     coords = list(polygon.exterior.coords)
     corner_poly = polygon
 
-    if polygon.interiors:
-        best_hole_coords = None
-        best_corner_poly = None
-        best_corner_count = -1
+    exterior_corners = 0
+    try:
+        ext_corners = detect_sharp_corners(corner_poly, angle_threshold_deg=150.0,
+                                           spatial_radius_px=12.0)
+        exterior_corners = len(ext_corners)
+    except Exception:
+        pass
+
+    if exterior_corners < 3 and polygon.interiors:
+        # Exterior has too few corners (likely canvas bbox).
+        # Search interior holes for the most detailed boundary.
+        best_coords = coords
+        best_corner_poly = corner_poly
+        best_corner_count = 0
         for hole in polygon.interiors:
             hole_coords = list(hole.coords)
             try:
@@ -153,13 +163,12 @@ def build_initial_graph(polygon: Polygon) -> RoadMarkedPath:
                                                spatial_radius_px=12.0)
                 if len(corners) > best_corner_count:
                     best_corner_count = len(corners)
-                    best_hole_coords = hole_coords
+                    best_coords = hole_coords
                     best_corner_poly = hp
             except Exception:
                 continue
-        if best_hole_coords is not None:
-            corner_poly = best_corner_poly
-            coords = best_hole_coords
+        coords = best_coords
+        corner_poly = best_corner_poly
 
     # ── exterior ring as plain coordinate list ──────────────────────────
     # Shapely rings are closed — drop the duplicated endpoint.

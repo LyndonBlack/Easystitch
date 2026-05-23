@@ -56,6 +56,30 @@
 
 ---
 
+### Stage 2 — Auto Junction Detection + Auto-Split ✅
+
+**Commit**: `0ae21c4` (2026-05-23)
+
+**Backend**:
+- `geometry.py`: `detect_junctions(polygon, stitch_spacing=20.0)` — scans boundary points for close non-adjacent pairs, width-checks regions, clusters candidates, returns junction centroids
+- `geometry.py`: `_local_width_at_point(polygon, point)` — inward normal ray casting to measure local interior width
+- `geometry.py`: `_cluster_points(points, radius)` — distance-based spatial clustering
+- `road_marker.py`: `auto_detect_junctions(path, polygon, stitch_spacing=20.0)` — finds junctions, splits edges at junction midpoints, places yield rungs between edges meeting at new nodes
+- `app.py`: `POST /api/roads/auto_detect` endpoint — accepts `{path_id, stitch_spacing?}`, runs detection, returns updated RoadMarkedPath
+- `tests/`: 16 new tests (50 total in test_road_marker.py, 84 total across both suites)
+
+**Frontend**:
+- "🔍 Auto-Detect" button in road-graph-modal toolbar, calls `RoadMarker.autoDetect()`
+- Junction nodes rendered as orange diamonds (distinct from blue corner circles)
+- Toast shows counts after detection
+
+**Results on puppy head**:
+- 5 yield edges found after auto-detect
+- Edges split at junctions with rung creation
+- All 84 tests passing
+
+---
+
 ## Remaining Bugs (Current Session)
 
 ### 1. Split tool places splits on wrong lines
@@ -136,10 +160,10 @@
 - Auto-detect primary/secondary based on length, enclosure, continuity, area
 - User accepts or adjusts
 
-### Stage 2: Auto Junction Detection + Splitting
-- Narrow-waist detection for branch points
-- Multi-boundary handling for ring polygons
-- Auto-split at junctions, auto-place yield rungs
+### Stage 2: Auto Junction Detection + Splitting ✅ DONE
+- Narrow-waist detection for branch points ✅
+- Multi-boundary handling for ring polygons ✅
+- Auto-split at junctions, auto-place yield rungs ✅
 
 ### Stage 3: Satin V2 Stitching Engine
 - Given pre-structured segments with start/end rungs, produce zigzag paths
