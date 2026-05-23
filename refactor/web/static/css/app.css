@@ -122,3 +122,12 @@ input[type=range]{accent-color:#e94560}
 }
 .preview-bg-toggle:hover{background:#1d3153}
 .work-card{position:relative!important}
+
+/* Road marking toolbar */
+.road-tool-btn{padding:5px 8px!important;font-size:.68rem!important;border-radius:5px!important;line-height:1.2!important}
+.road-tool-btn.active{background:#0f3460!important;border-color:#4488ff!important;color:#fff!important;box-shadow:0 0 8px rgba(68,136,255,.3)}
+.road-overlay-status{position:absolute;bottom:4px;right:8px;font-size:.65rem;color:#8f96b3;pointer-events:none;z-index:10}
+.stitch-order-item{padding:3px 6px;cursor:grab;border-bottom:1px solid #1a1a2e;display:flex;align-items:center;gap:6px;user-select:none}
+.stitch-order-item:hover{background:#16213e}
+.stitch-order-item.dragging{opacity:.5;background:#0f3460}
+.stitch-order-item .so-priority{width:10px;height:10px;border-radius:50%;flex-shrink:0}

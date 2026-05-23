@@ -16,7 +16,15 @@ from easystitch_core.trace import trace_prepared_png, parse_traced_svg_for_struc
 from easystitch_core.geometry import manual_split_object, split_fill_object_by_junction
 from easystitch_core.stitch_plan import build_stitch_preview_svg, build_stitch_plan
 from easystitch_core.export_dst import export_stitch_plan_to_dst
-from easystitch_core.road_marker import build_initial_graph
+from easystitch_core.road_marker import (
+    build_initial_graph,
+    place_split_node,
+    place_yield_rung,
+    set_edge_priority,
+    merge_edges,
+    reorder_stitch_order,
+    _reset_counters,
+)
 from easystitch_core.export_pyembroidery import export_stitch_plan_to_jef, export_stitch_plan_to_vp3
 
 
@@ -33,6 +41,7 @@ def create_app(initial_input: str | None, output_dir: str) -> Flask:
     app.config["LAST_PREP"] = None
     app.config["LAST_TRACE"] = None
     app.config["LAST_STRUCTURE"] = None
+    app.config["_ROAD_STATE"] = {}  # path_id -> RoadMarkedPath (session cache)
     Path(app.config["UPLOAD_DIR"]).mkdir(parents=True, exist_ok=True)
 
     @app.route("/")
@@ -306,6 +315,46 @@ def create_app(initial_input: str | None, output_dir: str) -> Flask:
             return jsonify({"ok": False, "error": str(e), "trace": traceback.format_exc()})
 
 
+    def _get_road_state(path_id: str):
+        """Get or initialise cached road state for a path_id."""
+        from easystitch_core.geometry import object_fill_geometry
+        from shapely.geometry import MultiPolygon
+
+        state = app.config["_ROAD_STATE"]
+        if path_id in state:
+            return state[path_id]
+
+        # First call: build initial graph
+        structure = app.config.get("LAST_STRUCTURE")
+        if not structure or not structure.get("objects"):
+            raise RuntimeError("No structure loaded. Load Pane 3 first.")
+
+        obj = None
+        for o in structure["objects"]:
+            if o.get("id") == path_id:
+                obj = o
+                break
+        if not obj:
+            raise RuntimeError(f"Path {path_id} not found in structure.")
+
+        geom = object_fill_geometry(obj)
+        if geom is None:
+            raise RuntimeError("Could not convert path to polygon geometry.")
+
+        if isinstance(geom, MultiPolygon):
+            if geom.is_empty:
+                raise RuntimeError("Path geometry is empty.")
+            geom = max(geom.geoms, key=lambda g: g.area)
+
+        if not hasattr(geom, 'exterior'):
+            raise RuntimeError("Path geometry is not a polygon.")
+
+        _reset_counters()
+        graph = build_initial_graph(geom)
+        graph.path_id = path_id
+        state[path_id] = graph
+        return graph
+
     @app.route("/api/roads/build_graph", methods=["POST"])
     def api_roads_build_graph():
         try:
@@ -314,40 +363,33 @@ def create_app(initial_input: str | None, output_dir: str) -> Flask:
             if not path_id:
                 return jsonify({"ok": False, "error": "Missing path_id"})
 
-            structure = app.config.get("LAST_STRUCTURE")
-            if not structure or not structure.get("objects"):
-                return jsonify({"ok": False, "error": "No structure loaded. Load Pane 3 first."})
+            # Use cached state helper — builds initial graph on first call
+            graph = _get_road_state(path_id)
 
-            # Find the object by its id
+            # Always rebuild from scratch for explicit build_graph calls
+            # (user may want to reset after manual edits)
+            from easystitch_core.geometry import object_fill_geometry
+            from shapely.geometry import MultiPolygon
+
+            structure = app.config.get("LAST_STRUCTURE")
             obj = None
             for o in structure["objects"]:
                 if o.get("id") == path_id:
                     obj = o
                     break
 
-            if not obj:
-                return jsonify({"ok": False, "error": f"Path {path_id} not found in structure."})
-
-            # Convert object to Shapely polygon
-            from easystitch_core.geometry import object_fill_geometry
-            from shapely.geometry import MultiPolygon
             geom = object_fill_geometry(obj)
-            if geom is None:
-                return jsonify({"ok": False, "error": "Could not convert path to polygon geometry."})
-
-            # If MultiPolygon, take the largest polygon by area
             if isinstance(geom, MultiPolygon):
                 if geom.is_empty:
                     return jsonify({"ok": False, "error": "Path geometry is empty."})
                 geom = max(geom.geoms, key=lambda g: g.area)
 
-            if not hasattr(geom, 'exterior'):
-                return jsonify({"ok": False, "error": "Path geometry is not a polygon."})
-
-            # Build the road graph
+            _reset_counters()
             graph = build_initial_graph(geom)
 
-            # RoadMarkedPath returns a dataclass — convert to dict
+            # Cache the fresh graph
+            app.config["_ROAD_STATE"][path_id] = graph
+
             result = graph.to_dict()
             result["path_id"] = path_id
             return jsonify(result)
@@ -355,6 +397,168 @@ def create_app(initial_input: str | None, output_dir: str) -> Flask:
             import traceback
             return jsonify({"ok": False, "error": str(e), "trace": traceback.format_exc()})
 
+    # ──────────────────────────────────────────────────────────────────────
+    # Stage 0B — Manual road-marking endpoints
+    # ──────────────────────────────────────────────────────────────────────
+
+    def _get_polygon_for_path(path_id: str):
+        """Get shapely polygon for a path_id from the cached road state."""
+        from easystitch_core.geometry import object_fill_geometry
+        from shapely.geometry import MultiPolygon
+
+        structure = app.config.get("LAST_STRUCTURE")
+        if not structure or not structure.get("objects"):
+            raise RuntimeError("No structure loaded.")
+
+        obj = None
+        for o in structure["objects"]:
+            if o.get("id") == path_id:
+                obj = o
+                break
+        if not obj:
+            raise RuntimeError(f"Path {path_id} not found.")
+
+        geom = object_fill_geometry(obj)
+        if geom is None:
+            raise RuntimeError("Could not convert path to polygon geometry.")
+        if isinstance(geom, MultiPolygon):
+            if geom.is_empty:
+                raise RuntimeError("Path geometry is empty.")
+            geom = max(geom.geoms, key=lambda g: g.area)
+        if not hasattr(geom, 'exterior'):
+            raise RuntimeError("Path geometry is not a polygon.")
+        return geom
+
+    @app.route("/api/roads/place_split", methods=["POST"])
+    def api_roads_place_split():
+        try:
+            body = request.get_json() or {}
+            path_id = body.get("path_id")
+            x = body.get("x")
+            y = body.get("y")
+            if not path_id:
+                return jsonify({"ok": False, "error": "Missing path_id"})
+            if x is None or y is None:
+                return jsonify({"ok": False, "error": "Missing x, y coordinates"})
+
+            polygon = _get_polygon_for_path(path_id)
+            current = _get_road_state(path_id)
+
+            updated = place_split_node(current, (float(x), float(y)), polygon)
+            app.config["_ROAD_STATE"][path_id] = updated
+
+            result = updated.to_dict()
+            result["path_id"] = path_id
+            return jsonify(result)
+        except Exception as e:
+            import traceback
+            return jsonify({"ok": False, "error": str(e), "trace": traceback.format_exc()})
+
+    @app.route("/api/roads/place_yield", methods=["POST"])
+    def api_roads_place_yield():
+        try:
+            body = request.get_json() or {}
+            path_id = body.get("path_id")
+            x = body.get("x")
+            y = body.get("y")
+            primary_edge_id = body.get("primary_edge_id")
+            secondary_edge_id = body.get("secondary_edge_id")
+            if not path_id:
+                return jsonify({"ok": False, "error": "Missing path_id"})
+            if x is None or y is None:
+                return jsonify({"ok": False, "error": "Missing x, y coordinates"})
+            if not primary_edge_id:
+                return jsonify({"ok": False, "error": "Missing primary_edge_id"})
+            if not secondary_edge_id:
+                return jsonify({"ok": False, "error": "Missing secondary_edge_id"})
+
+            polygon = _get_polygon_for_path(path_id)
+            current = _get_road_state(path_id)
+
+            updated = place_yield_rung(
+                current, (float(x), float(y)),
+                primary_edge_id, secondary_edge_id, polygon,
+            )
+            app.config["_ROAD_STATE"][path_id] = updated
+
+            result = updated.to_dict()
+            result["path_id"] = path_id
+            return jsonify(result)
+        except Exception as e:
+            import traceback
+            return jsonify({"ok": False, "error": str(e), "trace": traceback.format_exc()})
+
+    @app.route("/api/roads/set_priority", methods=["POST"])
+    def api_roads_set_priority():
+        try:
+            body = request.get_json() or {}
+            path_id = body.get("path_id")
+            edge_id = body.get("edge_id")
+            priority = body.get("priority")
+            if not path_id:
+                return jsonify({"ok": False, "error": "Missing path_id"})
+            if not edge_id:
+                return jsonify({"ok": False, "error": "Missing edge_id"})
+            if priority is None:
+                return jsonify({"ok": False, "error": "Missing priority"})
+
+            current = _get_road_state(path_id)
+            updated = set_edge_priority(current, edge_id, int(priority))
+            app.config["_ROAD_STATE"][path_id] = updated
+
+            result = updated.to_dict()
+            result["path_id"] = path_id
+            return jsonify(result)
+        except Exception as e:
+            import traceback
+            return jsonify({"ok": False, "error": str(e), "trace": traceback.format_exc()})
+
+    @app.route("/api/roads/merge_edges", methods=["POST"])
+    def api_roads_merge_edges():
+        try:
+            body = request.get_json() or {}
+            path_id = body.get("path_id")
+            edge_a_id = body.get("edge_a_id")
+            edge_b_id = body.get("edge_b_id")
+            if not path_id:
+                return jsonify({"ok": False, "error": "Missing path_id"})
+            if not edge_a_id:
+                return jsonify({"ok": False, "error": "Missing edge_a_id"})
+            if not edge_b_id:
+                return jsonify({"ok": False, "error": "Missing edge_b_id"})
+
+            current = _get_road_state(path_id)
+            updated = merge_edges(current, edge_a_id, edge_b_id)
+            app.config["_ROAD_STATE"][path_id] = updated
+
+            result = updated.to_dict()
+            result["path_id"] = path_id
+            return jsonify(result)
+        except Exception as e:
+            import traceback
+            return jsonify({"ok": False, "error": str(e), "trace": traceback.format_exc()})
+
+    @app.route("/api/roads/reorder", methods=["POST"])
+    def api_roads_reorder():
+        try:
+            body = request.get_json() or {}
+            path_id = body.get("path_id")
+            stitch_order = body.get("stitch_order")
+            if not path_id:
+                return jsonify({"ok": False, "error": "Missing path_id"})
+            if not stitch_order or not isinstance(stitch_order, list):
+                return jsonify({"ok": False, "error": "Missing or invalid stitch_order (must be a list)"})
+
+            current = _get_road_state(path_id)
+            updated = reorder_stitch_order(current, stitch_order)
+            app.config["_ROAD_STATE"][path_id] = updated
+
+            result = updated.to_dict()
+            result["path_id"] = path_id
+            return jsonify(result)
+        except Exception as e:
+            import traceback
+            return jsonify({"ok": False, "error": str(e), "trace": traceback.format_exc()})
 
     return app
 

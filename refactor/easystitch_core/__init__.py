@@ -107,6 +107,13 @@ from .road_marker import (
     Node,
     Edge,
     build_initial_graph,
+    create_rung_at_point,
+    place_split_node,
+    place_yield_rung,
+    set_edge_priority,
+    merge_edges,
+    reorder_stitch_order,
+    _reset_counters,
 )
 
 from .export_pyembroidery import (
@@ -193,4 +200,11 @@ __all__ = [
     "Node",
     "Edge",
     "build_initial_graph",
+    "create_rung_at_point",
+    "place_split_node",
+    "place_yield_rung",
+    "set_edge_priority",
+    "merge_edges",
+    "reorder_stitch_order",
+    "_reset_counters",
 ]

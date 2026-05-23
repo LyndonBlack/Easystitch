@@ -271,9 +271,30 @@
         </div>
 
         <div class="card">
-          <h2>Road Graph (Stage 0A)</h2>
-          <div id="road-overlay-container" style="width:100%;min-height:300px;border:1px solid #333;border-radius:4px;position:relative;background:#0a0e1a;overflow:hidden">
+          <h2>Road Graph (Stage 0B)</h2>
+
+          <!-- Road Marking Toolbar -->
+          <div id="road-toolbar" style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:8px">
+            <button class="btn road-tool-btn active" data-tool="select" id="tool-select" title="Select: click edges/nodes to select">&#9997; Select</button>
+            <button class="btn road-tool-btn" data-tool="mark-primary" id="tool-mark-primary" title="Mark Primary: click edge → priority 0">&#x1F537; Primary</button>
+            <button class="btn road-tool-btn" data-tool="mark-secondary" id="tool-mark-secondary" title="Mark Secondary: click edge → priority 1">&#x1F536; Secondary</button>
+            <button class="btn road-tool-btn" data-tool="mark-tertiary" id="tool-mark-tertiary" title="Mark Tertiary: click edge → priority 2">&#x1F538; Tertiary</button>
+            <button class="btn road-tool-btn" data-tool="split" id="tool-split" title="Split: click edge → place split node">&#x2702; Split</button>
+            <button class="btn road-tool-btn" data-tool="yield" id="tool-yield" title="Yield: click junction → create yield rung">&#x26A1; Yield</button>
+            <button class="btn road-tool-btn" data-tool="promote" id="tool-promote" title="Promote/Demote: click edge → cycle priority">&#x1F504; Cycle</button>
+            <button class="btn road-tool-btn" data-tool="merge" id="tool-merge" title="Merge: select 2 adjacent edges → merge">&#x1F517; Merge</button>
+            <button class="btn road-tool-btn" data-tool="reorder" id="tool-reorder" title="Reorder: drag edges in stitch-order panel">&#x2195; Reorder</button>
+          </div>
+
+          <div id="road-overlay-container" style="width:100%;min-height:300px;border:1px solid #333;border-radius:4px;position:relative;background:#0a0e1a;overflow:hidden;margin-bottom:8px">
             <span style="color:#555;padding:12px;display:block">Select a SATIN path to view road graph.</span>
+          </div>
+
+          <!-- Stitch Order Panel -->
+          <div id="stitch-order-panel" style="display:none;margin-top:8px">
+            <div style="font-size:.78rem;color:#b8bfd6;font-weight:700;margin-bottom:4px">Stitch Order</div>
+            <div id="stitch-order-list" style="font-size:.72rem;color:#9da7c4;max-height:200px;overflow:auto;background:#0a0e1a;border:1px solid #333;border-radius:4px;padding:4px"></div>
+            <div style="margin-top:4px;font-size:.68rem;color:#8f96b3" id="stitch-order-status"></div>
           </div>
         </div>
       </aside>

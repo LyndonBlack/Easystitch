@@ -1,10 +1,11 @@
 /**
- * EasyStitch — Road Marker (Stage 0A)
+ * EasyStitch — Road Marker (Stage 0B)
  *
- * Debug overlay renderer for the satin_v2 road-marking system.
+ * Debug overlay renderer + manual road-marking tools.
  * When a satin path is selected in Pane 3, this builds the
- * initial graph (sharp corners + endpoints) from the backend
- * and renders it as an SVG overlay.
+ * initial graph from /api/roads/build_graph and renders it.
+ * The toolbar allows manual priority assignment, splitting,
+ * yield rungs, merging, and reordering.
  */
 
 const RoadMarker = (function() {
@@ -13,28 +14,475 @@ const RoadMarker = (function() {
   let currentPathId = null;
   let isLoading = false;
 
+  // Tool state
+  let currentTool = 'select';
+  let selectedEdgeId = null;       // for merge tool first click
+  let yieldFirstEdgeId = null;     // for yield tool first click
+
   // ── Color helpers ─────────────────────────────────────────────
   const NODE_COLORS = {
     sharp_corner: '#4488ff',
     endpoint: '#ff4444',
+    split_node: '#44ccaa',
     default: '#aaa',
   };
 
-  // Priority edge colours — Stage 0B will expand this
   const EDGE_COLORS = {
-    0: '#888888',  // unset
+    0: '#4488ff',   // primary (blue)
+    1: '#44cc44',   // secondary (green)
+    2: '#ff8844',   // tertiary (orange)
+    undefined: '#888888', // unset (grey)
   };
 
   function edgeColor(priority) {
-    return EDGE_COLORS[priority] || '#888888';
+    return EDGE_COLORS[priority] !== undefined ? EDGE_COLORS[priority] : EDGE_COLORS[undefined];
+  }
+
+  function priorityLabel(priority) {
+    if (priority === 0) return 'primary';
+    if (priority === 1) return 'secondary';
+    if (priority === 2) return 'tertiary';
+    return 'unset';
+  }
+
+  // ── Toolbar wiring ───────────────────────────────────────────
+
+  function initToolbar() {
+    const toolbar = document.getElementById('road-toolbar');
+    if (!toolbar) return;
+
+    // Remove old listeners by cloning
+    toolbar.querySelectorAll('.road-tool-btn').forEach(btn => {
+      btn.addEventListener('click', function() {
+        const tool = this.getAttribute('data-tool');
+        setTool(tool);
+      });
+    });
+  }
+
+  function setTool(tool) {
+    currentTool = tool;
+    selectedEdgeId = null;
+    yieldFirstEdgeId = null;
+    clearAllHighlights();
+
+    // Update button active states
+    document.querySelectorAll('.road-tool-btn').forEach(btn => {
+      btn.classList.toggle('active', btn.getAttribute('data-tool') === tool);
+    });
+
+    // Update cursor on overlay container
+    const container = document.getElementById('road-overlay-container');
+    if (container) {
+      container.querySelectorAll('svg').forEach(svg => {
+        updateCursor(svg);
+      });
+    }
+
+    // Show status
+    setStatus(tool === 'select' ? 'Select mode' :
+              tool === 'mark-primary' ? 'Mark Primary: click an edge' :
+              tool === 'mark-secondary' ? 'Mark Secondary: click an edge' :
+              tool === 'mark-tertiary' ? 'Mark Tertiary: click an edge' :
+              tool === 'split' ? 'Split: click on an edge' :
+              tool === 'yield' ? 'Yield: click first edge' :
+              tool === 'promote' ? 'Cycle: click edge to cycle priority' :
+              tool === 'merge' ? 'Merge: click first edge' :
+              tool === 'reorder' ? 'Reorder: drag edges in panel below' : '');
+
+    // Show/hide stitch order panel for reorder tool
+    const panel = document.getElementById('stitch-order-panel');
+    if (panel) panel.style.display = (tool === 'reorder') ? 'block' : 'none';
+
+    // If reorder mode, refresh the stitch order list
+    if (tool === 'reorder') rebuildStitchOrderPanel();
+  }
+
+  function setStatus(msg) {
+    let el = document.getElementById('road-overlay-status');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'road-overlay-status';
+      el.className = 'road-overlay-status';
+      const container = document.getElementById('road-overlay-container');
+      if (container) container.appendChild(el);
+    }
+    el.textContent = msg;
+  }
+
+  function updateCursor(svgEl) {
+    if (!svgEl) return;
+    if (currentTool === 'split' || currentTool === 'yield') {
+      svgEl.style.cursor = 'crosshair';
+    } else if (currentTool.startsWith('mark-') || currentTool === 'promote') {
+      svgEl.style.cursor = 'default';
+    } else if (currentTool === 'merge') {
+      svgEl.style.cursor = 'pointer';
+    } else {
+      svgEl.style.cursor = 'default';
+    }
+  }
+
+  // ── Click handling on SVG ─────────────────────────────────────
+
+  function attachClickHandlers(svgEl) {
+    if (!svgEl) return;
+
+    // Remove old listeners via clone
+    const newSvg = svgEl.cloneNode(true);
+    svgEl.parentNode.replaceChild(newSvg, svgEl);
+    updateCursor(newSvg);
+
+    // Edge click detection: edges + invisible hit areas
+    newSvg.querySelectorAll('[data-edge-id]').forEach(el => {
+      el.addEventListener('click', function(e) {
+        e.stopPropagation();
+        const edgeId = this.getAttribute('data-edge-id');
+        handleEdgeClick(edgeId, e);
+      });
+    });
+
+    // Node click detection
+    newSvg.querySelectorAll('[data-node-id]').forEach(el => {
+      el.addEventListener('click', function(e) {
+        e.stopPropagation();
+        const nodeId = this.getAttribute('data-node-id');
+        handleNodeClick(nodeId, e);
+      });
+    });
+
+    // Background click: deselect
+    newSvg.addEventListener('click', function(e) {
+      clearAllHighlights();
+      if (currentTool === 'yield') yieldFirstEdgeId = null;
+      if (currentTool === 'merge') selectedEdgeId = null;
+      setStatus(currentTool === 'yield' ? 'Yield: click first edge' :
+                 currentTool === 'merge' ? 'Merge: click first edge' : '');
+    });
+
+    return newSvg;
+  }
+
+  async function handleEdgeClick(edgeId, event) {
+    if (!currentPathId) {
+      showToast('No path loaded. Select a SATIN path first.', 'error');
+      return;
+    }
+
+    const edges = currentRoadData ? currentRoadData.edges : null;
+    if (!edges || !edges[edgeId]) return;
+
+    highlightEdge(edgeId);
+
+    switch (currentTool) {
+      case 'select':
+        // Just highlight
+        setStatus('Selected edge: ' + edgeId);
+        break;
+
+      case 'mark-primary':
+        await apiSetPriority(edgeId, 0);
+        break;
+
+      case 'mark-secondary':
+        await apiSetPriority(edgeId, 1);
+        break;
+
+      case 'mark-tertiary':
+        await apiSetPriority(edgeId, 2);
+        break;
+
+      case 'split':
+        await apiPlaceSplit(edgeId, event);
+        break;
+
+      case 'yield':
+        if (!yieldFirstEdgeId) {
+          yieldFirstEdgeId = edgeId;
+          setStatus('Yield: first edge selected (' + edgeId + '). Click second edge.');
+          highlightEdge(edgeId, '#ff88ff');
+        } else {
+          const firstId = yieldFirstEdgeId;
+          yieldFirstEdgeId = null;
+          setStatus('Yield: placing rung between ' + firstId + ' and ' + edgeId + '...');
+          await apiPlaceYield(firstId, edgeId, event);
+        }
+        break;
+
+      case 'promote':
+        await apiCyclePriority(edgeId);
+        break;
+
+      case 'merge':
+        if (!selectedEdgeId) {
+          selectedEdgeId = edgeId;
+          setStatus('Merge: first edge selected (' + edgeId + '). Click adjacent edge.');
+          highlightEdge(edgeId, '#ffcc44');
+        } else if (selectedEdgeId === edgeId) {
+          // Deselect
+          selectedEdgeId = null;
+          setStatus('Merge: click first edge');
+          clearAllHighlights();
+        } else {
+          const firstId = selectedEdgeId;
+          selectedEdgeId = null;
+          await apiMergeEdges(firstId, edgeId);
+        }
+        break;
+
+      case 'reorder':
+        setStatus('Reorder: use the panel below to drag edges');
+        break;
+    }
+  }
+
+  function handleNodeClick(nodeId, event) {
+    if (!currentRoadData) return;
+    const nodes = currentRoadData.nodes;
+    if (!nodes || !nodes[nodeId]) return;
+
+    highlightNode(nodeId);
+
+    if (currentTool === 'select') {
+      setStatus('Selected node: ' + nodeId + ' (' + (nodes[nodeId].type || '?') + ')');
+    }
+  }
+
+  // ── Highlighting ──────────────────────────────────────────────
+
+  function clearAllHighlights() {
+    const container = document.getElementById('road-overlay-container');
+    if (!container) return;
+    const svg = container.querySelector('svg');
+    if (!svg) return;
+
+    svg.querySelectorAll('.highlighted-edge').forEach(el => {
+      el.setAttribute('stroke-width', '2.5');
+      el.setAttribute('opacity', '0.7');
+      el.classList.remove('highlighted-edge');
+    });
+    svg.querySelectorAll('.highlighted-node').forEach(el => {
+      el.setAttribute('stroke-width', '1.2');
+      el.classList.remove('highlighted-node');
+    });
+  }
+
+  function highlightEdge(edgeId, color) {
+    clearAllHighlights();
+    const container = document.getElementById('road-overlay-container');
+    if (!container) return;
+    const svg = container.querySelector('svg');
+    if (!svg) return;
+
+    const el = svg.querySelector('[data-edge-id="' + edgeId + '"]');
+    if (!el) return;
+
+    el.setAttribute('stroke-width', '5');
+    el.setAttribute('opacity', '1');
+    if (color) el.setAttribute('stroke', color);
+    el.classList.add('highlighted-edge');
+  }
+
+  function highlightNode(nodeId) {
+    clearAllHighlights();
+    const container = document.getElementById('road-overlay-container');
+    if (!container) return;
+    const svg = container.querySelector('svg');
+    if (!svg) return;
+
+    const el = svg.querySelector('[data-node-id="' + nodeId + '"]');
+    if (!el) return;
+
+    el.setAttribute('stroke-width', '3');
+    el.setAttribute('stroke', '#fff');
+    el.classList.add('highlighted-node');
+  }
+
+  // ── API calls ────────────────────────────────────────────────
+
+  async function apiCall(endpoint, body) {
+    try {
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      return data;
+    } catch (e) {
+      console.error('API error:', endpoint, e);
+      return {error: 'Network error: ' + e.message};
+    }
+  }
+
+  async function apiSetPriority(edgeId, priority) {
+    setStatus('Setting priority ' + priorityLabel(priority) + ' on ' + edgeId + '...');
+    const result = await apiCall('/api/roads/set_priority', {
+      path_id: currentPathId,
+      edge_id: edgeId,
+      priority: priority,
+    });
+
+    if (result.error) {
+      showToast('Error: ' + result.error, 'error');
+      setStatus('Error: ' + result.error);
+      return;
+    }
+
+    // Incremental update: update local data and re-render
+    if (currentRoadData && currentRoadData.edges && currentRoadData.edges[edgeId]) {
+      currentRoadData.edges[edgeId].priority = priority;
+    }
+    refreshOverlay();
+    showToast('Set ' + edgeId + ' to ' + priorityLabel(priority), 'success');
+    setStatus('Priority updated: ' + priorityLabel(priority));
+  }
+
+  async function apiCyclePriority(edgeId) {
+    if (!currentRoadData || !currentRoadData.edges || !currentRoadData.edges[edgeId]) return;
+
+    const currentPriority = currentRoadData.edges[edgeId].priority;
+    const nextPriority = (typeof currentPriority === 'number') ? (currentPriority + 1) % 3 : 0;
+    await apiSetPriority(edgeId, nextPriority);
+  }
+
+  async function apiPlaceSplit(edgeId, event) {
+    setStatus('Placing split on ' + edgeId + '...');
+
+    // Get click position relative to SVG
+    const svgEl = event.target.closest('svg');
+    if (!svgEl) return;
+
+    const pt = svgEl.createSVGPoint();
+    pt.x = event.clientX;
+    pt.y = event.clientY;
+    const svgPt = pt.matrixTransform(svgEl.getScreenCTM().inverse());
+
+    const result = await apiCall('/api/roads/place_split', {
+      path_id: currentPathId,
+      edge_id: edgeId,
+      x: svgPt.x,
+      y: svgPt.y,
+    });
+
+    if (result.error) {
+      showToast('Split error: ' + result.error, 'error');
+      setStatus('Split error: ' + result.error);
+      return;
+    }
+
+    // Full refresh to get new nodes/edges
+    currentRoadData = result;
+    refreshOverlay();
+    showToast('Split placed on ' + edgeId, 'success');
+    setStatus('Split complete');
+  }
+
+  async function apiPlaceYield(edgeId1, edgeId2, event) {
+    const svgEl = overlayEl.querySelector('svg');
+    const pt = svgEl.createSVGPoint();
+    pt.x = event.clientX;
+    pt.y = event.clientY;
+    const svgPt = pt.matrixTransform(svgEl.getScreenCTM().inverse());
+    setStatus('Placing yield rung...');
+    const result = await apiCall('/api/roads/place_yield', {
+      path_id: currentPathId,
+      primary_edge_id: edgeId1,
+      secondary_edge_id: edgeId2,
+      x: svgPt.x,
+      y: svgPt.y,
+    });
+
+    if (result.error) {
+      showToast('Yield error: ' + result.error, 'error');
+      setStatus('Yield error: ' + result.error);
+      yieldFirstEdgeId = null;
+      return;
+    }
+
+    // Full refresh
+    currentRoadData = result;
+    refreshOverlay();
+    showToast('Yield rung placed', 'success');
+    setStatus('Yield complete');
+    yieldFirstEdgeId = null;
+  }
+
+  async function apiMergeEdges(edgeId1, edgeId2) {
+    setStatus('Merging ' + edgeId1 + ' + ' + edgeId2 + '...');
+    const result = await apiCall('/api/roads/merge_edges', {
+      path_id: currentPathId,
+      edge_a_id: edgeId1,
+      edge_b_id: edgeId2,
+    });
+
+    if (result.error) {
+      showToast('Merge error: ' + result.error, 'error');
+      setStatus('Merge error: ' + result.error);
+      selectedEdgeId = null;
+      return;
+    }
+
+    currentRoadData = result;
+    refreshOverlay();
+    showToast('Edges merged', 'success');
+    setStatus('Merge complete');
+    selectedEdgeId = null;
+  }
+
+  async function apiReorderEdges(orderedEdgeIds) {
+    if (!currentPathId) return;
+    setStatus('Reordering...');
+    const result = await apiCall('/api/roads/reorder', {
+      path_id: currentPathId,
+      stitch_order: orderedEdgeIds,
+    });
+
+    if (result.error) {
+      showToast('Reorder error: ' + result.error, 'error');
+      setStatus('Reorder error: ' + result.error);
+      return;
+    }
+
+    currentRoadData = result;
+    refreshOverlay();
+    rebuildStitchOrderPanel();
+    showToast('Stitch order updated', 'success');
+    setStatus('Reorder complete');
+  }
+
+  // ── Refresh overlay ──────────────────────────────────────────
+
+  function refreshOverlay() {
+    const container = document.getElementById('road-overlay-container');
+    if (!container || !currentRoadData) return;
+    renderDebugOverlay(container, currentRoadData);
+    if (currentTool === 'reorder') rebuildStitchOrderPanel();
+  }
+
+  // ── Toast helper ─────────────────────────────────────────────
+
+  function showToast(msg, type) {
+    const toast = document.getElementById('toast');
+    if (!toast) return;
+
+    if (type === 'error') {
+      toast.style.background = '#a33';
+    } else {
+      toast.style.background = '#2d7a52';
+    }
+    toast.textContent = msg;
+    toast.classList.add('show');
+    clearTimeout(toast._timeout);
+    toast._timeout = setTimeout(function() {
+      toast.classList.remove('show');
+    }, 2000);
   }
 
   // ── Rendering ─────────────────────────────────────────────────
 
   /**
    * Render the debug overlay inside a container element.
-   * @param {HTMLElement} container — DOM element for the overlay
-   * @param {Object} roadData — API response from /api/roads/build_graph
    */
   function renderDebugOverlay(container, roadData) {
     if (!container || !roadData) return;
@@ -69,10 +517,6 @@ const RoadMarker = (function() {
     const viewBoxW = Math.max(100, (maxX - minX) + padding * 2);
     const viewBoxH = Math.max(100, (maxY - minY) + padding * 2);
 
-    // Get container dimensions for scaling
-    const cw = container.clientWidth || 400;
-    const ch = container.clientHeight || 300;
-
     // Build SVG
     const svgNS = 'http://www.w3.org/2000/svg';
     const svg = document.createElementNS(svgNS, 'svg');
@@ -83,21 +527,40 @@ const RoadMarker = (function() {
     svg.style.overflow = 'visible';
 
     // Draw edges first (below nodes)
+    // Each edge gets TWO elements: a thick invisible hit area + visible line
     edgeIds.forEach(eid => {
       const edge = edges[eid];
       const startNode = nodes[edge.start_node_id];
       const endNode = nodes[edge.end_node_id];
       if (!startNode || !endNode) return;
 
+      const color = edgeColor(edge.priority);
+
+      // Invisible wide hit area for easy clicking
+      const hitLine = document.createElementNS(svgNS, 'line');
+      hitLine.setAttribute('x1', String(startNode.position[0]));
+      hitLine.setAttribute('y1', String(startNode.position[1]));
+      hitLine.setAttribute('x2', String(endNode.position[0]));
+      hitLine.setAttribute('y2', String(endNode.position[1]));
+      hitLine.setAttribute('stroke', 'transparent');
+      hitLine.setAttribute('stroke-width', '14');
+      hitLine.setAttribute('stroke-linecap', 'round');
+      hitLine.setAttribute('data-edge-id', eid);
+      hitLine.style.cursor = 'pointer';
+      svg.appendChild(hitLine);
+
+      // Visible line
       const line = document.createElementNS(svgNS, 'line');
       line.setAttribute('x1', String(startNode.position[0]));
       line.setAttribute('y1', String(startNode.position[1]));
       line.setAttribute('x2', String(endNode.position[0]));
       line.setAttribute('y2', String(endNode.position[1]));
-      line.setAttribute('stroke', edgeColor(edge.priority));
+      line.setAttribute('stroke', color);
       line.setAttribute('stroke-width', '2.5');
       line.setAttribute('stroke-linecap', 'round');
       line.setAttribute('opacity', '0.7');
+      line.setAttribute('data-edge-id', eid);
+      line.setAttribute('pointer-events', 'none'); // clicks go through to hit area
       svg.appendChild(line);
     });
 
@@ -107,7 +570,21 @@ const RoadMarker = (function() {
       const pos = node.position;
       const color = NODE_COLORS[node.type] || NODE_COLORS.default;
 
-      // Circle
+      // Group for click target
+      const g = document.createElementNS(svgNS, 'g');
+      g.setAttribute('data-node-id', nid);
+      g.style.cursor = 'pointer';
+
+      // Invisible hit area
+      const hitCircle = document.createElementNS(svgNS, 'circle');
+      hitCircle.setAttribute('cx', String(pos[0]));
+      hitCircle.setAttribute('cy', String(pos[1]));
+      hitCircle.setAttribute('r', '12');
+      hitCircle.setAttribute('fill', 'transparent');
+      hitCircle.setAttribute('stroke', 'transparent');
+      g.appendChild(hitCircle);
+
+      // Visible circle
       const circle = document.createElementNS(svgNS, 'circle');
       circle.setAttribute('cx', String(pos[0]));
       circle.setAttribute('cy', String(pos[1]));
@@ -115,7 +592,8 @@ const RoadMarker = (function() {
       circle.setAttribute('fill', color);
       circle.setAttribute('stroke', '#111');
       circle.setAttribute('stroke-width', '1.2');
-      svg.appendChild(circle);
+      circle.setAttribute('pointer-events', 'none');
+      g.appendChild(circle);
 
       // Label
       const text = document.createElementNS(svgNS, 'text');
@@ -124,8 +602,9 @@ const RoadMarker = (function() {
       text.setAttribute('fill', '#ccc');
       text.setAttribute('font-size', '10');
       text.setAttribute('font-family', 'monospace');
+      text.setAttribute('pointer-events', 'none');
       text.textContent = nid;
-      svg.appendChild(text);
+      g.appendChild(text);
 
       // Type label
       const typeText = document.createElementNS(svgNS, 'text');
@@ -134,8 +613,11 @@ const RoadMarker = (function() {
       typeText.setAttribute('fill', color);
       typeText.setAttribute('font-size', '8');
       typeText.setAttribute('font-family', 'monospace');
+      typeText.setAttribute('pointer-events', 'none');
       typeText.textContent = node.type;
-      svg.appendChild(typeText);
+      g.appendChild(typeText);
+
+      svg.appendChild(g);
     });
 
     // Edge labels at midpoints
@@ -155,6 +637,7 @@ const RoadMarker = (function() {
       etext.setAttribute('font-size', '8');
       etext.setAttribute('font-family', 'monospace');
       etext.setAttribute('text-anchor', 'middle');
+      etext.setAttribute('pointer-events', 'none');
       etext.textContent = eid.replace('edge_', 'e');
       svg.appendChild(etext);
     });
@@ -165,6 +648,9 @@ const RoadMarker = (function() {
     [
       {label: 'endpoint', color: NODE_COLORS.endpoint},
       {label: 'sharp_corner', color: NODE_COLORS.sharp_corner},
+      {label: 'pri 0', color: EDGE_COLORS[0]},
+      {label: 'pri 1', color: EDGE_COLORS[1]},
+      {label: 'pri 2', color: EDGE_COLORS[2]},
     ].forEach((item, i) => {
       const g = document.createElementNS(svgNS, 'g');
       const circ = document.createElementNS(svgNS, 'circle');
@@ -188,15 +674,111 @@ const RoadMarker = (function() {
     svg.appendChild(lg);
 
     container.appendChild(svg);
+
+    // Attach click handlers after rendering
+    attachClickHandlers(svg);
+
+    // Restore status element
+    setStatus(currentTool === 'select' ? 'Select mode' :
+              currentTool === 'mark-primary' ? 'Mark Primary: click an edge' :
+              currentTool === 'mark-secondary' ? 'Mark Secondary: click an edge' :
+              currentTool === 'mark-tertiary' ? 'Mark Tertiary: click an edge' :
+              currentTool === 'split' ? 'Split: click on an edge' :
+              currentTool === 'yield' ? 'Yield: click first edge' :
+              currentTool === 'promote' ? 'Cycle: click edge to cycle priority' :
+              currentTool === 'merge' ? 'Merge: click first edge' :
+              currentTool === 'reorder' ? 'Reorder: drag edges in panel below' : '');
+  }
+
+  // ── Stitch order panel ────────────────────────────────────────
+
+  function rebuildStitchOrderPanel() {
+    const listEl = document.getElementById('stitch-order-list');
+    if (!listEl || !currentRoadData) return;
+
+    const edges = currentRoadData.edges || {};
+    const edgeIds = Object.keys(edges);
+
+    if (edgeIds.length === 0) {
+      listEl.innerHTML = '<div style="padding:6px;color:#666">No edges</div>';
+      return;
+    }
+
+    // Sort by some order field if available, else by ID
+    const sortedEdgeIds = [...edgeIds].sort((a, b) => {
+      const oa = edges[a].stitch_order !== undefined ? edges[a].stitch_order : parseInt(a.replace(/\D/g, '0'), 10);
+      const ob = edges[b].stitch_order !== undefined ? edges[b].stitch_order : parseInt(b.replace(/\D/g, '0'), 10);
+      return oa - ob;
+    });
+
+    listEl.innerHTML = '';
+    sortedEdgeIds.forEach((eid, idx) => {
+      const edge = edges[eid];
+      const priority = edge.priority;
+      const div = document.createElement('div');
+      div.className = 'stitch-order-item';
+      div.setAttribute('data-edge-id', eid);
+      div.setAttribute('draggable', 'true');
+      div.style.cursor = 'grab';
+
+      div.innerHTML = '<span class="so-priority" style="background:' + edgeColor(priority) + '" title="' + priorityLabel(priority) + '"></span>' +
+                      '<span style="flex:1">' + eid + '</span>' +
+                      '<span style="color:' + edgeColor(priority) + '">' + priorityLabel(priority) + '</span>';
+
+      // Drag and drop handlers
+      div.addEventListener('dragstart', function(e) {
+        this.classList.add('dragging');
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', eid);
+        setTimeout(() => { if (this.classList.contains('dragging')) this.style.display = 'none'; }, 0);
+      });
+
+      div.addEventListener('dragend', function(e) {
+        this.classList.remove('dragging');
+        this.style.display = '';
+        listEl.querySelectorAll('.stitch-order-item').forEach(item => item.classList.remove('drag-over'));
+      });
+
+      div.addEventListener('dragover', function(e) {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+        this.classList.add('drag-over');
+      });
+
+      div.addEventListener('dragleave', function(e) {
+        this.classList.remove('drag-over');
+      });
+
+      div.addEventListener('drop', async function(e) {
+        e.preventDefault();
+        this.classList.remove('drag-over');
+
+        const draggedId = e.dataTransfer.getData('text/plain');
+        const targetId = this.getAttribute('data-edge-id');
+
+        if (draggedId === targetId) return;
+
+        // Rebuild order from the DOM
+        const items = Array.from(listEl.querySelectorAll('.stitch-order-item'));
+        const newOrder = items.map(el => el.getAttribute('data-edge-id'));
+
+        // Remove the dragged one from its old position and insert at target
+        const draggedIndex = newOrder.indexOf(draggedId);
+        const targetIndex = newOrder.indexOf(targetId);
+        if (draggedIndex >= 0) {
+          newOrder.splice(draggedIndex, 1);
+          newOrder.splice(targetIndex, 0, draggedId);
+        }
+
+        await apiReorderEdges(newOrder);
+      });
+
+      listEl.appendChild(div);
+    });
   }
 
   // ── API helpers ────────────────────────────────────────────────
 
-  /**
-   * Fetch the road graph from the backend for a given path.
-   * @param {string} pathId — the structure object id
-   * @returns {Promise<Object|null>} — road data or null on error
-   */
   async function fetchRoadGraph(pathId) {
     try {
       const res = await fetch('/api/roads/build_graph', {
@@ -216,20 +798,14 @@ const RoadMarker = (function() {
     }
   }
 
-  /**
-   * Show a loading state in the overlay container.
-   */
   function showLoading(container, pathId) {
     container.innerHTML = `
       <div style="padding:12px;color:#888;font-size:0.85rem">
         <span class="spinner" style="display:inline-block;width:14px;height:14px;border:2px solid #4488ff;border-top-color:transparent;border-radius:50%;animation:spin 0.8s linear infinite;vertical-align:middle;margin-right:8px"></span>
-        Building road graph for ${pathId}&hellip;
+        Building road graph for ${escapeHtml(pathId)}&hellip;
       </div>`;
   }
 
-  /**
-   * Show an error message in the overlay container.
-   */
   function showError(container, message) {
     container.innerHTML = `
       <div style="padding:12px;color:#ff6666;font-size:0.85rem">
@@ -243,13 +819,23 @@ const RoadMarker = (function() {
     return div.innerHTML;
   }
 
+  // ── Initialization ────────────────────────────────────────────
+
+  function init() {
+    initToolbar();
+    setTool('select');
+  }
+
+  // Auto-init on DOM ready
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
+
   // ── Public API ────────────────────────────────────────────────
 
   return {
-    /**
-     * Build and render the road graph for a selected satin path.
-     * @param {string} pathId — structure object id
-     */
     async showRoadGraph(pathId) {
       const container = document.getElementById('road-overlay-container');
       if (!container) return;
@@ -279,28 +865,29 @@ const RoadMarker = (function() {
       renderDebugOverlay(container, data);
     },
 
-    /**
-     * Clear the overlay.
-     */
     clear() {
       const container = document.getElementById('road-overlay-container');
       if (container) {
         container.innerHTML = '<span style="color:#555;padding:12px;display:block">Select a SATIN path to view road graph.</span>';
       }
+      const statusEl = document.getElementById('road-overlay-status');
+      if (statusEl) statusEl.remove();
+      const panel = document.getElementById('stitch-order-panel');
+      if (panel) panel.style.display = 'none';
       currentRoadData = null;
       currentPathId = null;
+      selectedEdgeId = null;
+      yieldFirstEdgeId = null;
     },
 
-    /**
-     * Get current road data.
-     */
     getData() {
       return currentRoadData;
     },
 
-    /**
-     * Render overlay directly (for reuse).
-     */
     renderDebugOverlay,
+
+    // Expose tool control
+    setTool: setTool,
+    getTool: function() { return currentTool; },
   };
 })();
