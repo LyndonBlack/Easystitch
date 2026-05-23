@@ -216,6 +216,83 @@ def _process_boundary(bound_poly: Polygon, coords: list, node_offset: int,
     return nodes, edges, s_order, bound_coords
 
 
+def _subdivide_long_edges(nodes: dict, edges: dict, stitch_order: list,
+                         max_edge_len: float = 80.0):
+    """
+    Insert intermediate nodes on edges longer than max_edge_len so that
+    gentle curves have enough anchor points for the user to split at.
+    Modifies nodes, edges, and stitch_order in-place.
+    """
+    # Derive next IDs from current max to avoid collisions
+    def _extract_num(s, prefix):
+        try: return int(s[len(prefix):])
+        except ValueError: return -1
+    max_n = max((_extract_num(k, "n") for k in nodes), default=-1)
+    max_e = max((_extract_num(k, "e") for k in edges), default=-1)
+    next_n = max_n + 1
+    next_e = max_e + 1
+
+    # Build a current list of edge IDs since we'll be modifying edges
+    current_eids = list(edges.keys())
+
+    for eid in current_eids:
+        if eid not in edges:
+            continue
+        edge = edges[eid]
+        sn = nodes.get(edge.start_node_id)
+        en = nodes.get(edge.end_node_id)
+        if not sn or not en:
+            continue
+
+        length = math.hypot(en.position[0] - sn.position[0],
+                            en.position[1] - sn.position[1])
+        if length <= max_edge_len:
+            continue
+
+        # How many subdivisions?  Aim for max_edge_len spacing.
+        n_splits = int(length / max_edge_len)
+        if n_splits < 1:
+            continue
+
+        # Build the chain: start node → intermediates → end node
+        chain_nodes = [sn]
+        for k in range(1, n_splits + 1):
+            t = k / (n_splits + 1)
+            px = sn.position[0] + t * (en.position[0] - sn.position[0])
+            py = sn.position[1] + t * (en.position[1] - sn.position[1])
+            nid = f"n{next_n}"
+            next_n += 1
+            nodes[nid] = Node(id=nid, type="sharp_corner", position=(px, py))
+            chain_nodes.append(nodes[nid])
+        chain_nodes.append(en)
+
+        # Replace the long edge with a chain of shorter edges
+        chain_edges = []
+        for k in range(len(chain_nodes) - 1):
+            neid = f"e{next_e}"
+            next_e += 1
+            edges[neid] = Edge(
+                id=neid,
+                priority=edge.priority,
+                start_node_id=chain_nodes[k].id,
+                end_node_id=chain_nodes[k + 1].id,
+                start_rung_id=edge.start_rung_id if k == 0 else None,
+                end_rung_id=edge.end_rung_id if k == len(chain_nodes) - 2 else None,
+                yield_to_edge_id=edge.yield_to_edge_id if k == 0 else None,
+            )
+            chain_edges.append(neid)
+
+        # Replace in stitch_order
+        try:
+            idx = stitch_order.index(eid)
+            stitch_order[idx:idx + 1] = chain_edges
+        except ValueError:
+            stitch_order.extend(chain_edges)
+
+        # Remove the original long edge
+        del edges[eid]
+
+
 def build_initial_graph(polygon: Polygon) -> RoadMarkedPath:
     """
     Stage 0A graph builder.
@@ -275,6 +352,11 @@ def build_initial_graph(polygon: Polygon) -> RoadMarkedPath:
             all_boundary_coords.append(render_coords)
             node_offset += len(nodes)
             edge_offset += len(edges)
+
+    # ── subdivide long edges for better shape coverage ───────────────────
+    # Gentle curves get few corner nodes; add evenly-spaced nodes on
+    # edges longer than max_edge_len to give the user enough anchor points.
+    _subdivide_long_edges(all_nodes, all_edges, all_stitch_order, max_edge_len=80.0)
 
     return RoadMarkedPath(
         path_id="",
@@ -481,6 +563,20 @@ def create_rung_at_point(polygon: Polygon, position: tuple) -> Rung | None:
     return Rung(id=rung_id, p1=crossbar[0], p2=crossbar[1])
 
 
+def _project_point_onto_segment(point: tuple, seg_start: tuple, seg_end: tuple) -> tuple | None:
+    """Project a point onto the line segment between seg_start and seg_end.
+    Returns the closest point on the segment, clamped to the segment bounds."""
+    px, py = point
+    ax, ay = seg_start
+    bx, by = seg_end
+    dx, dy = bx - ax, by - ay
+    seg_len_sq = dx * dx + dy * dy
+    if seg_len_sq < 1e-12:
+        return seg_start  # degenerate segment
+    t = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / seg_len_sq))
+    return (ax + t * dx, ay + t * dy)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Operation 1: place_split_node
 # ─────────────────────────────────────────────────────────────────────────────
@@ -503,20 +599,30 @@ def place_split_node(path: RoadMarkedPath, position: tuple, polygon: Polygon,
 
     _init_counters_from_path(path)
 
-    coords = _get_boundary_coords(polygon)
-
     # 1. Find which edge to split — use explicit edge_id if provided
     if edge_id is not None and edge_id in path.edges:
         split_edge_id = edge_id
+        # Project onto the straight line between the edge's nodes.
+        # This prevents the projection from jumping to unrelated boundaries.
+        edge = path.edges[split_edge_id]
+        sn = path.nodes.get(edge.start_node_id)
+        en = path.nodes.get(edge.end_node_id)
+        if sn and en:
+            # Project click position onto the node-to-node line
+            proj = _project_point_onto_segment(
+                position, sn.position, en.position
+            )
+            proj_pos = proj if proj else position
+        else:
+            proj_pos = position
     else:
+        coords = _get_boundary_coords(polygon)
         split_edge_id = _find_edge_for_position(path, position, coords)
-    if split_edge_id is None:
-        raise ValueError("Could not find an edge near the given position.")
-
-    # 2. Project position onto the edge's boundary segment
-    proj_pos = _project_point_on_edge(path, split_edge_id, position, coords)
-    if proj_pos is None:
-        proj_pos = position  # fallback
+        if split_edge_id is None:
+            raise ValueError("Could not find an edge near the given position.")
+        proj_pos = _project_point_on_edge(path, split_edge_id, position, coords)
+        if proj_pos is None:
+            proj_pos = position  # fallback
 
     # 3. Create the new node
     new_node_id = f"n{_next_node_id}"
