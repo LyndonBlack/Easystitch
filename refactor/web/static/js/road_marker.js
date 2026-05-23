@@ -924,18 +924,33 @@ const RoadMarker = (function() {
         overlay.style.display = 'none';
         btn.textContent = 'Show Road Graph';
         btn.style.background = '';
+        return;
+      }
+
+      // Show modal immediately
+      overlay.style.display = 'flex';
+      btn.textContent = 'Hide Road Graph';
+      btn.style.background = '#1a3a5c';
+
+      const overlaySvg = getOverlaySvg();
+      if (!overlaySvg) return;
+
+      if (currentRoadData) {
+        renderDebugOverlay(overlaySvg, currentRoadData);
+      } else if (currentPathId) {
+        // Data not cached yet — fetch it now
+        overlaySvg.innerHTML = '<text x="50%" y="50%" text-anchor="middle" fill="#888" font-size="16">Loading road graph...</text>';
+        (async () => {
+          const data = await fetchRoadGraph(currentPathId);
+          if (data && !data.error) {
+            currentRoadData = data;
+            renderDebugOverlay(overlaySvg, data);
+          } else {
+            overlaySvg.innerHTML = '<text x="50%" y="50%" text-anchor="middle" fill="#c44" font-size="16">Failed to load: ' + (data?.error || 'unknown') + '</text>';
+          }
+        })();
       } else {
-        // Re-render if we have data (may have been fetched already by path selection)
-        const overlaySvg = getOverlaySvg();
-        if (currentRoadData && overlaySvg) {
-          renderDebugOverlay(overlaySvg, currentRoadData);
-        } else if (!currentRoadData && overlaySvg) {
-          // No data yet — show a message
-          overlaySvg.innerHTML = '<text x="50%" y="50%" text-anchor="middle" fill="#666" font-size="18">Select a SATIN path first, then click Show Road Graph</text>';
-        }
-        overlay.style.display = 'flex';
-        btn.textContent = 'Hide Road Graph';
-        btn.style.background = '#1a3a5c';
+        overlaySvg.innerHTML = '<text x="50%" y="50%" text-anchor="middle" fill="#888" font-size="16">Select a SATIN path first, then click Show Road Graph</text>';
       }
     },
 
