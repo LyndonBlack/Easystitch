@@ -440,6 +440,7 @@ def create_app(initial_input: str | None, output_dir: str) -> Flask:
             path_id = body.get("path_id")
             x = body.get("x")
             y = body.get("y")
+            edge_id = body.get("edge_id")
             if not path_id:
                 return jsonify({"ok": False, "error": "Missing path_id"})
             if x is None or y is None:
@@ -448,7 +449,7 @@ def create_app(initial_input: str | None, output_dir: str) -> Flask:
             polygon = _get_polygon_for_path(path_id)
             current = _get_road_state(path_id)
 
-            updated = place_split_node(current, (float(x), float(y)), polygon)
+            updated = place_split_node(current, (float(x), float(y)), polygon, edge_id=edge_id)
             app.config["_ROAD_STATE"][path_id] = updated
 
             result = updated.to_dict()

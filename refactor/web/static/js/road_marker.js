@@ -263,9 +263,9 @@ const RoadMarker = (function() {
 
   function highlightEdge(edgeId, color) {
     clearAllHighlights();
-    const container = document.getElementById('road-overlay-container');
-    if (!container) return;
-    const svg = container.querySelector('svg');
+    // Try modal SVG first, fall back to old overlay container
+    const svg = document.getElementById('road-graph-modal-svg')
+                || document.getElementById('road-overlay-container')?.querySelector('svg');
     if (!svg) return;
 
     const el = svg.querySelector('[data-edge-id="' + edgeId + '"]');
@@ -279,9 +279,8 @@ const RoadMarker = (function() {
 
   function highlightNode(nodeId) {
     clearAllHighlights();
-    const container = document.getElementById('road-overlay-container');
-    if (!container) return;
-    const svg = container.querySelector('svg');
+    const svg = document.getElementById('road-graph-modal-svg')
+                || document.getElementById('road-overlay-container')?.querySelector('svg');
     if (!svg) return;
 
     const el = svg.querySelector('[data-node-id="' + nodeId + '"]');

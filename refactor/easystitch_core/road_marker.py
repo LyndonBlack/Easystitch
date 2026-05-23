@@ -486,13 +486,14 @@ def create_rung_at_point(polygon: Polygon, position: tuple) -> Rung | None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def place_split_node(path: RoadMarkedPath, position: tuple, polygon: Polygon) -> RoadMarkedPath:
+def place_split_node(path: RoadMarkedPath, position: tuple, polygon: Polygon,
+                     edge_id: str | None = None) -> RoadMarkedPath:
     """
     Place a user-cut node at the given position:
 
     1. Creates a new node at position (type="user_cut").
-    2. Finds the closest edge and splits it into two edges connected
-       through the new node.
+    2. Finds the closest edge (or uses explicit edge_id) and splits it
+       into two edges connected through the new node.
     3. Creates a rung at the split point (perpendicular to local boundary).
     4. Updates stitch_order.
 
@@ -504,8 +505,11 @@ def place_split_node(path: RoadMarkedPath, position: tuple, polygon: Polygon) ->
 
     coords = _get_boundary_coords(polygon)
 
-    # 1. Find which edge to split
-    split_edge_id = _find_edge_for_position(path, position, coords)
+    # 1. Find which edge to split — use explicit edge_id if provided
+    if edge_id is not None and edge_id in path.edges:
+        split_edge_id = edge_id
+    else:
+        split_edge_id = _find_edge_for_position(path, position, coords)
     if split_edge_id is None:
         raise ValueError("Could not find an edge near the given position.")
 
