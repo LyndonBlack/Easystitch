@@ -125,15 +125,16 @@ const RoadMarker = (function() {
   function attachClickHandlers(svgEl) {
     if (!svgEl) return;
 
-    // Remove old listeners via clone
+    // Remove old listeners by replacing with a clone
     const newSvg = svgEl.cloneNode(true);
     svgEl.parentNode.replaceChild(newSvg, svgEl);
     updateCursor(newSvg);
 
-    // Edge click detection: edges + invisible hit areas
+    // Edge click detection: all elements with data-edge-id
     newSvg.querySelectorAll('[data-edge-id]').forEach(el => {
       el.addEventListener('click', function(e) {
         e.stopPropagation();
+        e.preventDefault();
         const edgeId = this.getAttribute('data-edge-id');
         handleEdgeClick(edgeId, e);
       });
@@ -143,18 +144,19 @@ const RoadMarker = (function() {
     newSvg.querySelectorAll('[data-node-id]').forEach(el => {
       el.addEventListener('click', function(e) {
         e.stopPropagation();
+        e.preventDefault();
         const nodeId = this.getAttribute('data-node-id');
         handleNodeClick(nodeId, e);
       });
     });
 
-    // Background click: deselect
+    // SVG background click
     newSvg.addEventListener('click', function(e) {
-      clearAllHighlights();
-      if (currentTool === 'yield') yieldFirstEdgeId = null;
-      if (currentTool === 'merge') selectedEdgeId = null;
-      setStatus(currentTool === 'yield' ? 'Yield: click first edge' :
-                 currentTool === 'merge' ? 'Merge: click first edge' : '');
+      if (e.target === newSvg || e.target.tagName === 'svg') {
+        clearAllHighlights();
+        if (currentTool === 'yield') yieldFirstEdgeId = null;
+        if (currentTool === 'merge') selectedEdgeId = null;
+      }
     });
 
     return newSvg;
@@ -584,7 +586,7 @@ const RoadMarker = (function() {
       hitLine.style.cursor = 'pointer';
       svg.appendChild(hitLine);
 
-      // Visible line
+      // Visible line (pointer-events: none so clicks pass through to hit area)
       const line = document.createElementNS(svgNS, 'line');
       line.setAttribute('x1', String(startNode.position[0]));
       line.setAttribute('y1', String(startNode.position[1]));
@@ -594,8 +596,7 @@ const RoadMarker = (function() {
       line.setAttribute('stroke-width', '2.5');
       line.setAttribute('stroke-linecap', 'round');
       line.setAttribute('opacity', '0.7');
-      line.setAttribute('data-edge-id', eid);
-      line.setAttribute('pointer-events', 'none'); // clicks go through to hit area
+      line.setAttribute('pointer-events', 'none');
       svg.appendChild(line);
     });
 
