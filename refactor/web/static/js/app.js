@@ -557,6 +557,8 @@ function applyStructureAssignmentClick(obj, shiftKey=false) {
     structureCheckedIds.clear();
     refreshAssignmentViews();
     toast('Assigned ' + toolType + ' to ' + (obj.label || obj.id));
+    // --- Stage 0A: Road marker hook ---
+    _maybeShowRoadGraph(obj.id);
     return;
   }
 
@@ -565,6 +567,8 @@ function applyStructureAssignmentClick(obj, shiftKey=false) {
     stitchAssignments[obj.id] = cycleStitchType(stitchAssignments[obj.id] || defaultStitchType(obj));
     refreshAssignmentViews();
     toast('Changed selected object to ' + (stitchAssignments[obj.id] || 'fill'));
+    // --- Stage 0A: Road marker hook ---
+    _maybeShowRoadGraph(obj.id);
     return;
   }
 
@@ -745,6 +749,29 @@ function selectStructureObject(id) {
   renderStructurePreview();
   updateStructureDetail();
   if (structureSplitMode) toast('Manual split target selected: now place first cut point');
+
+  // --- Stage 0A: Road marker hook ---
+  _maybeShowRoadGraph(id);
+}
+
+// --- Stage 0A: Road marker helper ---
+function _maybeShowRoadGraph(objectId) {
+  if (typeof RoadMarker === 'undefined') return;
+  if (!objectId) {
+    RoadMarker.clear();
+    return;
+  }
+  const obj = structureObjects.find(o => o.id === objectId);
+  if (!obj) {
+    RoadMarker.clear();
+    return;
+  }
+  const st = stitchAssignments[obj.id] || defaultStitchType(obj);
+  if (st === 'satin') {
+    RoadMarker.showRoadGraph(objectId);
+  } else {
+    RoadMarker.clear();
+  }
 }
 
 function toggleStructureChecked(id) {

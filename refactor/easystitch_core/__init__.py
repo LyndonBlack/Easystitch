@@ -101,6 +101,14 @@ from .export_dst import (
     export_stitch_plan_to_dst,
 )
 
+from .road_marker import (
+    RoadMarkedPath,
+    Rung,
+    Node,
+    Edge,
+    build_initial_graph,
+)
+
 from .export_pyembroidery import (
     export_stitch_plan_to_jef,
     export_stitch_plan_to_vp3,
@@ -180,4 +188,9 @@ __all__ = [
     "export_stitch_plan_to_dst",
     "export_stitch_plan_to_jef",
     "export_stitch_plan_to_vp3",
+    "RoadMarkedPath",
+    "Rung",
+    "Node",
+    "Edge",
+    "build_initial_graph",
 ]

@@ -16,6 +16,7 @@ from easystitch_core.trace import trace_prepared_png, parse_traced_svg_for_struc
 from easystitch_core.geometry import manual_split_object, split_fill_object_by_junction
 from easystitch_core.stitch_plan import build_stitch_preview_svg, build_stitch_plan
 from easystitch_core.export_dst import export_stitch_plan_to_dst
+from easystitch_core.road_marker import build_initial_graph
 from easystitch_core.export_pyembroidery import export_stitch_plan_to_jef, export_stitch_plan_to_vp3
 
 
@@ -300,6 +301,56 @@ def create_app(initial_input: str | None, output_dir: str) -> Flask:
                 "stats": stats,
                 "debug": debug
             })
+        except Exception as e:
+            import traceback
+            return jsonify({"ok": False, "error": str(e), "trace": traceback.format_exc()})
+
+
+    @app.route("/api/roads/build_graph", methods=["POST"])
+    def api_roads_build_graph():
+        try:
+            body = request.get_json() or {}
+            path_id = body.get("path_id")
+            if not path_id:
+                return jsonify({"ok": False, "error": "Missing path_id"})
+
+            structure = app.config.get("LAST_STRUCTURE")
+            if not structure or not structure.get("objects"):
+                return jsonify({"ok": False, "error": "No structure loaded. Load Pane 3 first."})
+
+            # Find the object by its id
+            obj = None
+            for o in structure["objects"]:
+                if o.get("id") == path_id:
+                    obj = o
+                    break
+
+            if not obj:
+                return jsonify({"ok": False, "error": f"Path {path_id} not found in structure."})
+
+            # Convert object to Shapely polygon
+            from easystitch_core.geometry import object_fill_geometry
+            from shapely.geometry import MultiPolygon
+            geom = object_fill_geometry(obj)
+            if geom is None:
+                return jsonify({"ok": False, "error": "Could not convert path to polygon geometry."})
+
+            # If MultiPolygon, take the largest polygon by area
+            if isinstance(geom, MultiPolygon):
+                if geom.is_empty:
+                    return jsonify({"ok": False, "error": "Path geometry is empty."})
+                geom = max(geom.geoms, key=lambda g: g.area)
+
+            if not hasattr(geom, 'exterior'):
+                return jsonify({"ok": False, "error": "Path geometry is not a polygon."})
+
+            # Build the road graph
+            graph = build_initial_graph(geom)
+
+            # RoadMarkedPath returns a dataclass — convert to dict
+            result = graph.to_dict()
+            result["path_id"] = path_id
+            return jsonify(result)
         except Exception as e:
             import traceback
             return jsonify({"ok": False, "error": str(e), "trace": traceback.format_exc()})

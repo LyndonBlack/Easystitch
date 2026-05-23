@@ -28,6 +28,123 @@ from .utils import (
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Sharp corner detection (for road-marking graph)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def detect_sharp_corners(polygon, angle_threshold_deg: float = 90.0,
+                        simplify_px: float = None,
+                        spatial_radius_px: float = 12.0) -> list:
+    """
+    Detect sharp corners on a polygon boundary.
+
+    The polygon is first simplified with tolerance *simplify_px*
+    (auto-computed from perimeter if None) to collapse densely-sampled
+    traced curves into a manageable set of structural vertices.
+    Then each vertex of the simplified ring is checked: the angle
+    between incoming and outgoing edges is computed, and vertices whose
+    turning-angle deviation (= 180° - interior_angle) is below
+    *angle_threshold_deg* are returned as sharp corners.
+    Nearby qualifying vertices are spatially deduplicated.
+
+    Parameters
+    ----------
+    polygon : shapely.geometry.Polygon
+    angle_threshold_deg : float
+        Maximum deviation to qualify as sharp (lower = sharper; a
+        right-angle turn has deviation ≈ 90°).  Default 90° catches
+        right-angle turns and sharper.  Use 100-110° for moderate
+        turns like ear junctions.
+    simplify_px : float or None
+        Simplification tolerance in pixels.  If None, auto-computed
+        as perimeter / 60 (≈ 2-4% of vertices kept).
+    spatial_radius_px : float
+        Deduplication radius in pixels.
+
+    Returns
+    -------
+    list of ((float, float), float)
+        Each element is ((x, y), deviation_degrees) for a sharp corner,
+        in boundary-traversal order.
+    """
+    coords_full = list(polygon.exterior.coords)
+    if len(coords_full) > 1 and coords_full[0] == coords_full[-1]:
+        coords_full = coords_full[:-1]
+    n_full = len(coords_full)
+    if n_full < 3:
+        return []
+
+    # ── Simplify ─────────────────────────────────────────────────────────
+    if simplify_px is None:
+        perimeter = 0.0
+        for i in range(n_full):
+            j = (i + 1) % n_full
+            perimeter += math.hypot(
+                coords_full[i][0] - coords_full[j][0],
+                coords_full[i][1] - coords_full[j][1])
+        simplify_px = max(2.0, perimeter / 100.0)
+
+    simplified = polygon.simplify(simplify_px, preserve_topology=True)
+    if simplified.is_empty or simplified.geom_type != 'Polygon':
+        simplified = polygon  # fallback
+
+    coords = list(simplified.exterior.coords)
+    if len(coords) > 1 and coords[0] == coords[-1]:
+        coords = coords[:-1]
+    n = len(coords)
+    if n < 3:
+        return []
+
+    # ── Find sharp corners ──────────────────────────────────────────────
+    candidates: list[tuple[tuple[float, float], float, int]] = []
+    for i in range(n):
+        prev = coords[(i - 1) % n]
+        curr = coords[i]
+        nxt = coords[(i + 1) % n]
+
+        ix = curr[0] - prev[0]
+        iy = curr[1] - prev[1]
+        ox = nxt[0] - curr[0]
+        oy = nxt[1] - curr[1]
+
+        im = math.hypot(ix, iy)
+        om = math.hypot(ox, oy)
+        if im < 1e-9 or om < 1e-9:
+            continue
+
+        cos_a = (ix * ox + iy * oy) / (im * om)
+        cos_a = max(-1.0, min(1.0, cos_a))
+        angle_deg = math.degrees(math.acos(cos_a))
+        deviation = 180.0 - angle_deg  # low = sharp corner, high = straight
+
+        if deviation < angle_threshold_deg:
+            candidates.append((
+                (float(curr[0]), float(curr[1])),
+                deviation,
+                i,
+            ))
+
+    if not candidates:
+        return []
+
+    # ── Spatial deduplication ───────────────────────────────────────────
+    candidates.sort(key=lambda c: c[1])  # sharpest first (lowest dev)
+    kept: list[tuple[int, tuple[tuple[float, float], float]]] = []
+
+    for pos, dev, ri in candidates:
+        too_close = False
+        for _, (kpos, _) in kept:
+            if math.hypot(pos[0] - kpos[0], pos[1] - kpos[1]) < spatial_radius_px:
+                too_close = True
+                break
+        if not too_close:
+            kept.append((ri, (pos, dev)))
+
+    kept.sort(key=lambda item: item[0])
+    return [item[1] for item in kept]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Geometry construction from SVG paths
 # ─────────────────────────────────────────────────────────────────────────────
 
