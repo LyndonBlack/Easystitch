@@ -66,11 +66,6 @@ const RoadMarker = (function() {
     yieldFirstEdgeId = null;
     clearAllHighlights();
 
-    // Deactivate structure tools when any road tool (except select) is active
-    if (tool !== 'select' && typeof deactivateStructureTools === 'function') {
-      deactivateStructureTools();
-    }
-
     // Update button active states
     document.querySelectorAll('.road-tool-btn').forEach(btn => {
       btn.classList.toggle('active', btn.getAttribute('data-tool') === tool);
@@ -129,15 +124,6 @@ const RoadMarker = (function() {
   }
 
   // ── Click handling on SVG ─────────────────────────────────────
-
-  // Stop all clicks inside the overlay from bubbling up to structure panel
-  const container = document.getElementById('road-overlay-container');
-  if (container && !container._roadClickBlocked) {
-    container._roadClickBlocked = true;
-    container.addEventListener('click', function(e) {
-      e.stopPropagation();
-    }, true); // capture phase — stops before structure handlers fire
-  }
 
   function attachClickHandlers(svgEl) {
     if (!svgEl) return;
