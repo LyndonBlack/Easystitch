@@ -731,3 +731,692 @@ The replacement implementation will follow this checklist only.
 Old code will not be preserved unless it is a completely generic utility and clearly matches the checklist.
 Step 1 is limited to collect_satin_objects, render_satin_mask, and clean_binary_mask.
 AutoTrace, graph parsing, and UI changes are explicitly out of scope until Step 1 is complete and tested.
+
+
+New Phase to the plan: 
+Phase A — Centreline input pipeline
+Status: mostly complete
+- Satin-only visible mask
+- AutoTrace centerline
+- parser cleanup
+- graph overlay
+- UI preview
+- manual validation
+
+Phase B — Road segment editor
+Next
+- store graph in frontend state
+- convert graph edges to roadSegments
+- click/select road segments
+- show selected segment info
+- mark Primary / Secondary / Tertiary manually
+- clear marks
+- save/export structured road JSON
+
+Phase C — Rung generation
+After segment editor
+- for selected road segments, sample centreline
+- cast normals through visible Satin mask/original polygons
+- create start/end/intermediate rungs
+- show rung overlay in Pane 3
+
+Phase D — Satin V2 preview
+After rung generation
+- generate direct zigzag from rungs
+- preview only
+- no export yet
+
+Phase E — Stitch plan integration
+Later
+- stitch Satin V2 segments in Pane 4
+- fallback to legacy per path/segment
+- export DST/JEF as normal
+
+EasyStitch Satin V2 — Next Phases Plan
+Road Segment Editor → Rung Generation → Satin V2 Preview → Stitch Integration
+Current confirmed baseline
+
+The following is now working and should be preserved:
+
+Pane 3 current state
+→ manual split and reassignment respected
+→ visible Satin compositing mask
+→ Fill/Skip objects knock out hidden Satin backing shapes
+→ AutoTrace centreline
+→ parser keeps separate subpaths
+→ small loops preserved
+→ centerline graph returned by /api/roads/centerline
+→ Pane 3 overlay shows useful road graph
+
+Validated images:
+
+Puppy: good
+HappySun: good
+House: good after visible Satin mask compositing fix
+
+Do not rewrite this pipeline unless a specific regression is found.
+
+Phase B — Road Segment Editor
+Goal
+
+Turn the centreline graph into an editable road segment structure in Pane 3.
+
+This phase is not about stitching yet.
+
+The goal is:
+
+centerline graph edges
+→ selectable road segments
+→ editable priority/role metadata
+→ saved structured road JSON
+
+Pane 3 should let the user inspect and manually mark graph edges as road segments before any Satin V2 stitch generation.
+
+Phase B.1 — Road segment data model
+Backend/frontend data shape
+
+After /api/roads/centerline returns a graph, the frontend should convert each graph edge into a road segment candidate.
+
+Suggested structure:
+
+{
+  "road_graph_id": "roadgraph_001",
+  "source": "autotrace_centerline",
+  "svg_w": 527,
+  "svg_h": 352,
+  "segments": [
+    {
+      "segment_id": "seg_0001",
+      "edge_id": "edge_0001",
+      "source_node": "node_0001",
+      "target_node": "node_0002",
+      "points": [[100.0, 50.0], [105.0, 52.0], [110.0, 55.0]],
+      "length": 42.7,
+      "source_object_ids": ["path_12"],
+      "priority": null,
+      "role": "unmarked",
+      "selected": false,
+      "locked": false,
+      "start_rung_id": null,
+      "end_rung_id": null,
+      "notes": ""
+    }
+  ],
+  "nodes": [
+    {
+      "node_id": "node_0001",
+      "x": 100.0,
+      "y": 50.0,
+      "degree": 1,
+      "type": "endpoint"
+    }
+  ],
+  "rungs": {},
+  "stitch_order": []
+}
+Required segment roles
+
+Initial roles:
+
+unmarked
+primary
+secondary
+tertiary
+ignore
+fill_candidate
+
+Only implement the first four if simpler:
+
+unmarked
+primary
+secondary
+ignore
+Rules
+Do not alter the centerline graph data returned by backend.
+Create roadSegments as a frontend/editor layer.
+Road segment IDs must be stable until the graph is rebuilt.
+Selection and marking must survive zoom/pan.
+Selection and marking do not need to survive app reload yet, unless saving JSON is implemented in this phase.
+Phase B.2 — Side-panel editor, minimal version
+
+Before building the large overlay, add a small side-panel confirmation step.
+
+Pane 3 side panel additions
+
+Add:
+
+Road Segments
+- Segments: N
+- Nodes: N
+- Junctions: N
+- Selected segment: none / seg_xxxx
+- Selected length
+- Selected priority
+
+Buttons:
+
+Open Segment Editor
+Clear Road Segments
+Export Road JSON
+
+Optional immediate buttons:
+
+Mark Primary
+Mark Secondary
+Mark Ignore
+Clear Mark
+Testing point
+
+Use the existing Pane 3 overlay.
+
+Confirm:
+
+Build Centerline Graph creates roadSegments
+Stats match graph edges
+No stitch generation affected
+Existing Build Satin Mask still works
+Existing Build Centerline Graph still works
+Phase C — Large Road Segment Editor Overlay
+Goal
+
+Create a larger, zoomable editor modal/overlay for road graph marking.
+
+This is needed because the sidebar is too small for reliable path selection.
+
+Phase B.3 — Manual split boundary preservation
+
+Problem:
+The visible Satin mask correctly respects Fill/Skip reassignment, but if a manually split parent creates two adjacent child paths and both remain Satin, the raster mask merges them into one black region. AutoTrace sees one continuous centreline and the manual split boundary is lost.
+
+Goal:
+Manual split boundaries from Pane 3 must become forced road-graph nodes when both split children remain Satin.
+
+Inputs:
+- current Pane 3 structureObjects
+- stitchAssignments
+- AutoTrace centreline graph
+- current Satin object geometries
+
+Rules:
+1. Continue using the visible Satin compositing mask for AutoTrace.
+2. Do not change the mask behaviour.
+3. After graph creation, compare graph edges against Satin object boundaries.
+4. If a centreline edge crosses a boundary between two different current Satin objects, insert a forced node.
+5. Split that edge at the forced node.
+6. Mark the new node type as manual_split_boundary.
+7. Preserve this node in roadSegments and exported Road JSON.
+8. Do not stitch yet.
+
+Acceptance:
+- If a user manually splits a Satin object into two Satin children, Build Centerline Graph should show a road segment break at the split.
+- If one child is reassigned Fill, current mask knockout behaviour still works.
+- Puppy/HappySun/House centrelines remain correct.
+- No artificial gaps are introduced into the mask.
+
+
+Phase C.1 — Overlay shell
+UI control
+
+Add a Pane 3 button:
+
+Open Segment Editor
+
+This opens a modal/overlay covering most of the screen.
+
+Suggested dimensions:
+
+width: 90vw
+height: 90vh
+Overlay layout
+┌──────────────────────────────────────────────────────────────┐
+│ Satin Road Segment Editor                              [Close]│
+├──────────────────────────────────────────────────────────────┤
+│ Toolbar:                                                     │
+│ [Select] [Pan] [Zoom Fit] [Zoom +] [Zoom -]                  │
+│ [Primary] [Secondary] [Tertiary] [Ignore] [Clear]            │
+│ [Export JSON] [Apply]                                        │
+├──────────────────────────────────────────────────────────────┤
+│                                                              │
+│  SVG editor viewport                                         │
+│  - faint satin mask/path outlines in background               │
+│  - centerline edges on top                                    │
+│  - nodes/junctions                                           │
+│  - selected segment highlight                                │
+│                                                              │
+├──────────────────────────────────────────────────────────────┤
+│ Selected: seg_001 | length 42.7 | priority primary | nodes…  │
+└──────────────────────────────────────────────────────────────┘
+Required behaviour
+Open overlay without rebuilding graph.
+Close overlay without losing road segment markings.
+Apply button writes current road segment marks back to Pane 3 state.
+Cancel/Close should not destroy existing graph unless explicitly cleared.
+Phase C.2 — SVG coordinate system and 0,0 bug prevention
+
+This is critical.
+
+Required SVG rendering rules
+
+The overlay SVG must use the same coordinate system as the original traced SVG:
+
+Every overlay layer must share this same viewBox.
+
+Layers:
+
+Layer 1: faint original/current Satin visible mask or current path outlines
+Layer 2: centerline edges
+Layer 3: graph nodes
+Layer 4: selected/hover highlight
+Layer 5: optional labels
+Do not do this
+
+Do not place faint outlines as separate absolutely positioned SVGs without matching viewBox.
+
+Do not use CSS left/top positioning for individual paths.
+
+Do not create a new SVG with default viewBox="0 0 100 100".
+
+Do not render path overlays in screen coordinates while centerlines are in SVG coordinates.
+
+Correct pattern
+<div id="road-editor-viewport">
+  <svg id="road-editor-svg"
+       viewBox="0 0 ${svg_w} ${svg_h}"
+       preserveAspectRatio="xMidYMid meet">
+    <g id="road-bg-layer"></g>
+    <g id="road-edge-layer"></g>
+    <g id="road-node-layer"></g>
+    <g id="road-highlight-layer"></g>
+  </svg>
+</div>
+Testing point for 0,0 bug
+
+For Puppy, HappySun, and House:
+
+faint outlines align exactly with centerline overlay
+no outlines appear collapsed at top-left
+zoom/pan does not separate layers
+clicking edge selects the visible edge, not an offset location
+Phase C.3 — Zoom and pan
+Required controls
+Zoom Fit
+Zoom In
+Zoom Out
+Mouse wheel zoom
+Pan mode or middle-mouse/drag pan
+Reset View
+Implementation recommendation
+
+Use SVG viewBox manipulation, not CSS transform, if possible.
+
+Maintain:
+
+roadEditorViewBox = {
+  x: 0,
+  y: 0,
+  w: svg_w,
+  h: svg_h
+}
+
+Zoom operation changes viewBox.
+
+Pan operation changes x/y.
+
+Why viewBox is safer
+
+It keeps click coordinates in SVG space easier to calculate:
+
+svgPoint = screenPoint.matrixTransform(svg.getScreenCTM().inverse())
+Testing point
+Zoom in on puppy mouth
+click a small mouth segment
+correct segment selected
+
+Zoom in on house window
+click one window line
+correct segment selected
+
+Pan then click a roof segment
+correct segment selected
+Phase C.4 — Hit testing and selection
+Avoid button/overlay interference
+
+The SVG editor area must not be covered by invisible UI panels.
+
+Rules:
+
+Toolbar must not overlap SVG hit area.
+Stats/footer must not overlap SVG hit area.
+Only edge paths should receive pointer events inside SVG edge layer.
+Background layers should use pointer-events: none.
+Node layer can receive pointer events only if node editing is implemented.
+
+Suggested CSS:
+
+.road-bg-layer {
+  pointer-events: none;
+}
+
+.road-edge {
+  pointer-events: stroke;
+  cursor: pointer;
+}
+
+.road-node {
+  pointer-events: auto;
+}
+
+.road-editor-toolbar {
+  pointer-events: auto;
+}
+Edge rendering for selection
+
+Render each edge twice:
+
+visible stroke: thin line
+hit stroke: transparent, wider line
+
+Example:
+
+<path class="road-edge-hit"
+      data-segment-id="seg_001"
+      stroke="transparent"
+      stroke-width="10"
+      fill="none" />
+
+<path class="road-edge-visible"
+      data-segment-id="seg_001"
+      stroke="cyan"
+      stroke-width="1.5"
+      fill="none"
+      pointer-events="none" />
+
+The hit path should handle the click.
+
+Testing point
+Clicking a tiny edge is easy at normal zoom.
+Clicking near but not on an edge does not select the wrong segment.
+Buttons still work.
+Toolbar clicks do not select graph edges underneath.
+Phase C.5 — Segment marking
+Toolbar buttons
+
+Implement:
+
+Mark Primary
+Mark Secondary
+Mark Tertiary
+Mark Ignore
+Clear Mark
+
+Initial version can simply update:
+
+roadSegments[segmentId].priority
+roadSegments[segmentId].role
+
+Mapping:
+
+Primary   → priority 0, role primary
+Secondary → priority 1, role secondary
+Tertiary  → priority 2, role tertiary
+Ignore    → priority null, role ignore
+Clear     → priority null, role unmarked
+Visual colours
+
+Suggested:
+
+unmarked: cyan
+primary: blue
+secondary: green
+tertiary: orange
+ignore: grey dashed
+selected: magenta or yellow highlight
+junction node: red/orange
+endpoint node: green
+Testing point
+Select house roof edge → Mark Primary → colour changes
+Select chimney edge → Mark Secondary → colour changes
+Select unwanted tiny spur → Ignore → grey/dashed
+Clear mark → returns to unmarked
+Close/reopen overlay → markings remain
+Rebuild graph → markings reset, with warning
+Phase C.6 — Export structured road JSON
+
+Add button:
+
+Export Road JSON
+
+This should download or save the current road graph structure.
+
+Data should include:
+
+{
+  "version": 1,
+  "svg_w": 527,
+  "svg_h": 352,
+  "segments": [...],
+  "nodes": [...],
+  "rungs": {},
+  "stitch_order": [],
+  "metadata": {
+    "created_from": "autotrace_centerline",
+    "mask_scale": 4
+  }
+}
+
+No backend storage needed initially; browser download is enough.
+
+Testing point
+Mark several segments
+Export JSON
+Open JSON
+Confirm selected priorities are present
+Confirm points are in SVG coordinates
+Phase D — Manual Rung / Yield Marker Foundation
+Goal
+
+Add the concept of rungs to road segments without stitching yet.
+
+This phase prepares for Satin V2 but still does not generate stitches.
+
+Phase D.1 — Rung data model
+
+Add:
+
+{
+  "rungs": {
+    "rung_001": {
+      "rung_id": "rung_001",
+      "type": "manual",
+      "p1": [100, 50],
+      "p2": [120, 55],
+      "attached_segments": ["seg_001", "seg_002"],
+      "role": "shared_junction"
+    }
+  }
+}
+
+Segment references:
+
+{
+  "segment_id": "seg_001",
+  "start_rung_id": "rung_001",
+  "end_rung_id": "rung_002"
+}
+
+Use IDs, not copied-only coordinates.
+
+Coordinates may be duplicated for convenience, but IDs are authoritative.
+
+Phase D.2 — Manual rung placement tool
+
+Overlay toolbar:
+
+Place Rung
+
+Behaviour:
+
+1. Select a segment.
+2. Click-drag across the satin width.
+3. Store rung p1/p2 in SVG coordinates.
+4. Attach rung to selected segment as start or end depending on nearest endpoint.
+
+Simpler initial behaviour:
+
+After drawing rung:
+- if closer to segment start point → set start_rung_id
+- if closer to segment end point → set end_rung_id
+Testing point
+Select puppy ear segment
+draw start rung at ear/head junction
+draw end rung at ear tip
+rungs remain visible
+export JSON includes rung IDs and coordinates
+Phase D.3 — Shared rung at junction
+
+Later in this phase, support:
+
+one rung attached to multiple segments
+
+Use case:
+
+face_top end rung == face_left start rung
+ear_start rung yields to face segment
+
+Initial manual method:
+
+select rung
+Attach to another segment
+choose as start or end
+
+Do not automate yield logic yet.
+
+Phase E — Rung Generation Preview
+Goal
+
+Generate candidate rungs along a selected road segment from centreline and visible Satin geometry.
+
+Still preview only. No stitches.
+
+Phase E.1 — Backend helper
+
+Create:
+
+easystitch_core/satin_v2.py
+
+Initial functions:
+
+def generate_segment_rungs(segment, visible_satin_mask_or_polygons, spacing_px):
+    ...
+
+or if easier:
+
+def generate_segment_rungs_from_mask(segment_points, mask_image, scale, spacing_px):
+    ...
+Algorithm
+
+For each segment:
+
+1. Walk along centreline points.
+2. Resample at satin spacing distance.
+3. For each sample:
+   - compute tangent from neighbouring points
+   - compute normal
+   - cast ray/line across visible Satin mask or polygon
+   - find black-to-white boundary crossings
+   - use outermost crossings as rung p1/p2
+4. Return list of rungs.
+Important
+
+Use the visible Satin mask, not original raw satin object only, for the first implementation. This already solved the house nested-fill problem.
+
+Phase E.2 — Preview rungs
+
+Overlay can show:
+
+generated rungs as short perpendicular lines
+start/end rungs highlighted
+invalid rungs in red
+Testing point
+House roof: rungs cross roof stroke cleanly
+Puppy ear: rungs cross ear outline cleanly
+HappySun smile: rungs cross smile cleanly
+No rungs through Fill interiors
+Phase F — Satin V2 Zigzag Preview
+Goal
+
+Generate a visual zigzag path from generated rungs.
+
+Still no stitch plan/export integration.
+
+Phase F.1 — Direct zigzag
+
+Given rungs:
+
+rung_0.left → rung_0.right → rung_1.left → rung_1.right → ...
+
+No bar ordering.
+
+No side-step conversion.
+
+No hidden connector.
+
+No legacy satin.
+
+Testing point
+Preview zigzag on selected segment.
+Confirm it stays inside outline.
+Confirm no long line through Fill areas.
+Confirm no square side-step pattern.
+Phase G — Stitch Plan Integration
+Goal
+
+Only after the visual Satin V2 preview is good, integrate with Pane 4 stitch generation.
+
+Phase G.1 — Per-segment stitch events
+
+In stitch_plan.py, add V2 branch:
+
+if satin_engine == "v2" and structured road data exists:
+    stitch road segments using Satin V2
+else:
+    legacy satin
+Rules
+top_satin connector_geom=None
+trim between unrelated segments
+underlay later, not first
+fallback to legacy per path/segment if V2 fails
+Guardrails for all future phases
+Do not modify these unless explicitly in phase scope
+legacy satin.py
+legacy fill.py
+export_dst.py
+export_pyembroidery.py
+existing stitch plan exports
+Keep old working app usable
+
+At every phase:
+
+pytest tests -q
+node --check web/static/js/app.js
+node --check web/static/js/road_marker.js
+manual browser smoke:
+  image prep
+  trace
+  Pane 3
+  Build Satin Mask
+  Build Centerline Graph
+  existing Pane 4 preview/export
+Debug artefacts to preserve
+
+For each major visual change, save outputs:
+
+test_assets/autotrace_review/<case>_mask.png
+test_assets/autotrace_review/<case>_overlay.svg
+test_assets/autotrace_review/<case>_road_segments.json
+
+Cases:
+
+puppy/test.png
+HappySun
+House
