@@ -79,6 +79,42 @@ def test_parse_centerline_svg_to_polylines_supports_polyline_line_and_path():
     assert polylines[2]["points"][-1] == [10.0, 15.0]
 
 
+def test_parse_centerline_svg_to_polylines_splits_multi_move_paths():
+    svg_text = """
+    <svg xmlns="http://www.w3.org/2000/svg" width="100" height="40">
+      <path d="M 0 0 L 10 0 M 50 0 L 60 0 M 80 0 L 90 0" />
+    </svg>
+    """
+
+    polylines = parse_centerline_svg_to_polylines(svg_text, scale=1)
+
+    assert len(polylines) == 3
+    assert polylines[0]["points"] == [[0.0, 0.0], [10.0, 0.0]]
+    assert polylines[1]["points"] == [[50.0, 0.0], [60.0, 0.0]]
+    assert polylines[2]["points"] == [[80.0, 0.0], [90.0, 0.0]]
+
+
+def test_parse_real_autotrace_svg_does_not_connect_separate_subpaths():
+    fixture = os.path.abspath(os.path.join(
+        os.path.dirname(__file__),
+        "..",
+        "..",
+        "test_assets",
+        "autotrace_review",
+        "test_png_direct_autotrace_centerline_raw.svg",
+    ))
+    if not os.path.exists(fixture):
+        pytest.skip("AutoTrace review fixture has not been generated yet")
+
+    svg_text = open(fixture, "r", encoding="utf-8").read()
+    polylines = parse_centerline_svg_to_polylines(svg_text, scale=1)
+
+    assert len(polylines) > 1
+
+    graph = build_centerline_graph(polylines, snap_distance=3.0)
+    assert len(graph["edges"]) == len(polylines)
+
+
 def test_clean_centerline_polylines_removes_tiny_paths_and_preserves_endpoints():
     polylines = [
         {"id": "short", "points": [[0, 0], [1, 0]], "length": 1.0},

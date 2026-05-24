@@ -725,3 +725,104 @@ Implement checklist Step 4 only:
 
 ### Next step
 Implement checklist Step 5 only: /api/roads/centerline.
+
+---
+
+## 2026-05-24 10:32:40 IST - Pre-Step 5 parser correction
+
+### Current objective
+Fix parse_centerline_svg_to_polylines before wiring /api/roads/centerline so SVG paths containing multiple M/m move commands are split into independent polylines.
+
+### Files changed
+- path: /home/lyndon/AI/Easystitch/refactor/easystitch_core/road_marker.py
+- function/section changed: replaced _flatten_svg_path with _flatten_svg_path_subpaths and updated parse_centerline_svg_to_polylines
+- reason for change: AutoTrace may emit one <path> containing many independent M/m subpaths; parser must not draw artificial connector lines between separate moves
+- whether code was added, removed, or modified: modified parser helper and path parsing branch
+
+- path: /home/lyndon/AI/Easystitch/refactor/tests/test_road_marker.py
+- function/section changed: added multi-move path regression tests
+- reason for change: prevent parser from rejoining independent AutoTrace subpaths
+- whether code was added, removed, or modified: added tests
+
+- path: /home/lyndon/AI/Easystitch/test_assets/autotrace_review/test_autotrace_centerline_raw.svg
+- function/section changed: regenerated Satin-mask raw AutoTrace SVG review artifact
+- reason for change: provide reviewable output after parser correction
+- whether code was added, removed, or modified: generated artifact
+
+- path: /home/lyndon/AI/Easystitch/test_assets/autotrace_review/test_centerline_overlay.svg
+- function/section changed: regenerated Satin-mask overlay SVG review artifact
+- reason for change: verify overlay no longer connects separate AutoTrace subpaths
+- whether code was added, removed, or modified: generated artifact
+
+- path: /home/lyndon/AI/Easystitch/test_assets/autotrace_review/test_png_direct_autotrace_centerline_raw.svg
+- function/section changed: regenerated direct-raster raw AutoTrace SVG fixture/review artifact
+- reason for change: requested regression fixture and comparison output
+- whether code was added, removed, or modified: generated artifact
+
+- path: /home/lyndon/AI/Easystitch/test_assets/autotrace_review/test_png_direct_centerline_overlay.svg
+- function/section changed: regenerated direct-raster overlay SVG fixture/review artifact
+- reason for change: verify direct AutoTrace overlay no longer connects separate subpaths
+- whether code was added, removed, or modified: generated artifact
+
+### Commands run
+- command: pytest tests/test_road_marker.py::test_parse_centerline_svg_to_polylines_splits_multi_move_paths tests/test_road_marker.py::test_parse_real_autotrace_svg_does_not_connect_separate_subpaths -q
+- success/failure: expected failure before implementation
+- important output/error: both tests failed; parser returned one joined polyline
+
+- command: pytest tests/test_road_marker.py::test_parse_centerline_svg_to_polylines_splits_multi_move_paths tests/test_road_marker.py::test_parse_real_autotrace_svg_does_not_connect_separate_subpaths -q
+- success/failure: success after parser patch
+- important output/error: 2 passed
+
+- command: python3 -m py_compile easystitch_core/road_marker.py && pytest tests -q
+- success/failure: success
+- important output/error: 10 passed
+
+- command: python3 inline review artifact regeneration script
+- success/failure: success
+- important output/error: Satin mask raw_polylines=67 clean_polylines=59 nodes=105 edges=59; direct raster raw_polylines=6 clean_polylines=5 nodes=9 edges=5
+
+- command: date '+%Y-%m-%d %H:%M:%S %Z' && git status --short
+- success/failure: success
+- important output/error: timestamp 2026-05-24 10:32:40 IST; geometry.py remains unrelated dirty file
+
+### Tests performed
+- what was tested: synthetic path with three M commands
+- input file used: inline SVG in tests/test_road_marker.py
+- expected result: three independent polylines
+- actual result: three independent polylines after fix
+- pass/fail: pass
+
+- what was tested: real AutoTrace output test_png_direct_autotrace_centerline_raw.svg
+- input file used: /home/lyndon/AI/Easystitch/test_assets/autotrace_review/test_png_direct_autotrace_centerline_raw.svg
+- expected result: parser returns multiple polylines and graph has one edge per polyline
+- actual result: test passed
+- pass/fail: pass
+
+- what was tested: full active tests
+- input file used: refactor/tests
+- expected result: all active tests pass
+- actual result: 10 passed
+- pass/fail: pass
+
+### Debug outputs created
+- mask PNG: /home/lyndon/AI/Easystitch/test_assets/autotrace_review/test_satin_mask.png
+- mask PNG: /home/lyndon/AI/Easystitch/test_assets/autotrace_review/test_png_threshold_mask.png
+- AutoTrace SVG: /home/lyndon/AI/Easystitch/test_assets/autotrace_review/test_autotrace_centerline_raw.svg
+- AutoTrace SVG: /home/lyndon/AI/Easystitch/test_assets/autotrace_review/test_png_direct_autotrace_centerline_raw.svg
+- overlay SVG: /home/lyndon/AI/Easystitch/test_assets/autotrace_review/test_centerline_overlay.svg
+- overlay SVG: /home/lyndon/AI/Easystitch/test_assets/autotrace_review/test_png_direct_centerline_overlay.svg
+- graph JSON: /home/lyndon/AI/Easystitch/test_assets/autotrace_review/test_centerline_graph.json
+- graph JSON: /home/lyndon/AI/Easystitch/test_assets/autotrace_review/test_png_direct_centerline_graph.json
+
+### Decisions made
+- Detect separate subpaths by comparing each parsed svgpathtools segment start with the previous segment end.
+- If a segment starts somewhere other than the previous end, close the current polyline and begin a new one.
+- Do not connect across M/m move jumps.
+- Keep the raw AutoTrace SVG unchanged; the correction is in parser/overlay interpretation.
+
+### Issues / blockers
+- None for this correction.
+- refactor/easystitch_core/geometry.py remains dirty from earlier rejected medial-axis work and was not touched.
+
+### Next step
+Proceed to checklist Step 5 only: /api/roads/centerline, using the corrected multi-subpath parser.

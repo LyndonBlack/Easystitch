@@ -280,24 +280,40 @@ def _parse_points_attr(points_text: str, scale: float) -> list[list[float]]:
     return points
 
 
-def _flatten_svg_path(d: str, scale: float) -> list[list[float]]:
+def _flatten_svg_path_subpaths(d: str, scale: float) -> list[list[list[float]]]:
     path = parse_path(d)
-    points: list[list[float]] = []
+    subpaths: list[list[list[float]]] = []
+    current: list[list[float]] = []
+    previous_end: complex | None = None
+
+    def append_point(point_value: complex) -> None:
+        point = [float(point_value.real) / scale, float(point_value.imag) / scale]
+        if not current or math.hypot(point[0] - current[-1][0], point[1] - current[-1][1]) > 1e-9:
+            current.append(point)
+
     for segment in path:
+        if previous_end is None or abs(segment.start - previous_end) > 1e-7:
+            if len(current) >= 2:
+                subpaths.append(current)
+            current = []
+            append_point(segment.start)
+
         if isinstance(segment, Line):
-            samples = [segment.start, segment.end]
+            samples = [segment.end]
         else:
             try:
                 seg_len = float(segment.length(error=1e-3))
             except Exception:
                 seg_len = 20.0
             steps = max(4, min(80, int(math.ceil(seg_len / max(scale, 1.0) / 2.0))))
-            samples = [segment.point(i / steps) for i in range(steps + 1)]
+            samples = [segment.point(i / steps) for i in range(1, steps + 1)]
         for sample in samples:
-            point = [float(sample.real) / scale, float(sample.imag) / scale]
-            if not points or math.hypot(point[0] - points[-1][0], point[1] - points[-1][1]) > 1e-9:
-                points.append(point)
-    return points
+            append_point(sample)
+        previous_end = segment.end
+
+    if len(current) >= 2:
+        subpaths.append(current)
+    return subpaths
 
 
 def parse_centerline_svg_to_polylines(svg_text: str, scale: float) -> list[dict[str, Any]]:
@@ -328,9 +344,15 @@ def parse_centerline_svg_to_polylines(svg_text: str, scale: float) -> list[dict[
                 points = []
         elif name == "path" and element.attrib.get("d"):
             try:
-                points = _flatten_svg_path(element.attrib["d"], scale)
+                subpaths = _flatten_svg_path_subpaths(element.attrib["d"], scale)
             except Exception:
-                points = []
+                subpaths = []
+            for subpath in subpaths:
+                polyline = _make_polyline(f"cline_{counter}", subpath)
+                if polyline is not None:
+                    polylines.append(polyline)
+                    counter += 1
+            continue
 
         polyline = _make_polyline(f"cline_{counter}", points)
         if polyline is not None:
