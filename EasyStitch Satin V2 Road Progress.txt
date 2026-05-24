@@ -1264,3 +1264,88 @@ Implement Phase B.1 (road segment data model) and B.2 (side-panel editor) as des
 
 ### Next step
 Await user manual review and testing of Phase B.1/B.2.
+
+---
+
+## 2026-05-24 09:45:00 IST - Phase B.3 — Manual split boundary preservation
+
+### Current objective
+Implement Phase B.3: detect manual split boundaries where both children remain Satin, and insert forced nodes in the road graph at those boundaries.
+
+### Problem
+If a user manually splits a Satin path and both children remain Satin, the raster mask merges them into one black region. AutoTrace sees one continuous centreline. The split boundary is lost and road segments ignore the manual split.
+
+### Solution
+Two-stage post-processing pipeline added after centerline graph creation:
+
+1. **`_render_object_label_map()`** — Renders each Satin object with a unique grayscale fill (1, 2, 3...) into a label map image at mask resolution. Two adjacent Satin rectangles produce different pixel values (1 and 2) even though the compositing mask merges them as black.
+
+2. **`split_polylines_at_object_boundaries()`** — For each cleaned centreline polyline, walks every point and samples the label map. Where consecutive points belong to different Satin objects, inserts a split at the midpoint. Each resulting polyline carries a `source_object_ids` list.
+
+3. **Wire into `/api/roads/centerline` pipeline** — Split step inserted between `clean_centerline_polylines` and `build_centerline_graph`.
+
+4. **`tag_split_boundary_nodes()`** — Post-processes the graph: walks all nodes and tags any node that connects edges with different `source_object_ids` as `type: "manual_split_boundary"`. Called after `build_centerline_graph`.
+
+5. **Overlay SVG** — `manual_split_boundary` nodes render as magenta (#ff00ff) circles with radius 3.6, distinct from junction (orange), endpoint (green), and pass-through (yellow) nodes.
+
+6. **`build_centerline_graph` updated** — Now carries `source_object_ids` from polylines through to graph edges.
+
+### Files changed
+- path: refactor/easystitch_core/road_marker.py
+- function/section changed: added `_render_object_label_map()`, `split_polylines_at_object_boundaries()`, `tag_split_boundary_nodes()`; updated `build_centerline_graph()` to carry source_object_ids; updated `build_road_graph_overlay_svg()` for split boundary node styling
+- reason for change: Phase B.3 requires detecting Satin object boundaries in the raster mask and splitting centerlines accordingly
+
+- path: refactor/app.py
+- function/section changed: centerline route now calls split_polylines_at_object_boundaries and tag_split_boundary_nodes
+- reason for change: wire Phase B.3 into the API pipeline
+
+- path: refactor/easystitch_core/__init__.py
+- function/section changed: added split_polylines_at_object_boundaries and tag_split_boundary_nodes to exports
+
+### Commands run
+- command: python3 -m py_compile && node --check (all files)
+- success/failure: success
+- important output/error: all syntax OK
+
+- command: python3 -m pytest tests -q
+- success/failure: success
+- important output/error: 15 passed
+
+- command: python3 integration test — two adjacent Satin rectangles through full pipeline
+- success/failure: success
+- important output/error: 2 edges, 3 nodes (1 manual_split_boundary at x=49.9); edge_1=left_satin, edge_2=right_satin
+
+### Tests performed
+- what was tested: Automated unittest suite
+- expected result: 15 passed
+- actual result: 15 passed
+- pass/fail: pass
+
+- what was tested: Two adjacent Satin rectangles through /api/roads/centerline endpoint
+- input file used: inline SVG objects left_satin (M 10 10 L 50 10 L 50 60 L 10 60 Z) and right_satin (M 50 10 L 90 10 L 90 60 L 50 60 Z), both assigned Satin
+- expected result: 2 edges with source_object_ids=[left_satin] and [right_satin]; 1 node typed manual_split_boundary at the split point
+- actual result: matched expected
+- pass/fail: pass
+
+- what was tested: Label map pixel sampling at boundary (off-by-one fix)
+- input file used: same two-rectangle test
+- expected result: label=1 on left, label=2 on right
+- actual result: correct after fixing idx_to_obj_id key (was 0-based, needed 1-based since labels = index+1)
+- pass/fail: pass after fix
+
+### Debug outputs created
+- none
+
+### Decisions made
+- Split is done at the polyline level (before graph building) for clean edge creation, plus graph post-process tagging for node typing.
+- Label map uses 1-based values (0=background, 1=first Satin object, 2=second, etc.) — idx_to_obj_id uses matching 1-based keys.
+- Manual split boundary nodes: magenta (#ff00ff), radius 3.6, white stroke.
+- Existing Phase A/B.1/B.2 functionality preserved and unchanged.
+- No changes to frontend JS needed — overlay styling is server-side, and the new node type is handled by the existing stats logic.
+
+### Issues / blockers
+- Off-by-one bug in idx_to_obj_id reverse lookup (fixed): label values are index+1 but lookup was using raw index.
+- Two-point centerline polylines with the boundary at one endpoint can trigger splitting at sub-pixel rendering boundaries. This is expected and correct — the split node will be at the nearest pixel boundary.
+
+### Next step
+Await user review and testing of Phase B.3.

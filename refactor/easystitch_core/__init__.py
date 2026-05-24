@@ -108,6 +108,8 @@ from .road_marker import (
     run_autotrace_centerline,
     parse_centerline_svg_to_polylines,
     clean_centerline_polylines,
+    split_polylines_at_object_boundaries,
+    tag_split_boundary_nodes,
     build_centerline_graph,
     build_road_graph_overlay_svg,
 )

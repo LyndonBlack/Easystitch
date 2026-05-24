@@ -74,20 +74,32 @@ def _format_number(value: Any, default: float = 0.0) -> str:
     return f"{number:g}"
 
 
-def _build_satin_only_svg(
-    satin_objects: list[dict[str, Any]],
+def _build_compositing_mask_svg(
+    objects: list[dict[str, Any]],
+    assignments: dict[str, Any],
     svg_w: float,
     svg_h: float,
 ) -> str:
-    """Build a temporary SVG containing only black-filled Satin paths."""
+    """Build a temporary SVG with all objects, recoloured by assignment.
+
+    Satin objects render as #000000 (black).
+    Fill/Skip/Background/unset objects render as #ffffff (white).
+    Object order is preserved exactly — a later Fill object can knock out an
+    earlier Satin backing shape, matching the visual stacking of the traced SVG.
+    """
     width = _format_number(svg_w)
     height = _format_number(svg_h)
 
     path_elements: list[str] = []
-    for obj in satin_objects:
+    for obj in objects or []:
         d = obj.get("d")
         if not d:
             continue
+
+        obj_id = obj.get("id")
+        fill_color = "#ffffff"  # default: white (background/unset)
+        if obj_id is not None and _is_satin_assignment(assignments.get(str(obj_id))):
+            fill_color = "#000000"
 
         tx = float(obj.get("tx") or 0.0)
         ty = float(obj.get("ty") or 0.0)
@@ -96,7 +108,7 @@ def _build_satin_only_svg(
             transform = f' transform="translate({_format_number(tx)} {_format_number(ty)})"'
 
         path_elements.append(
-            f'<path d="{escape(str(d))}" fill="#000000" stroke="none"{transform}/>'
+            f'<path d="{escape(str(d))}" fill="{fill_color}" stroke="none"{transform}/>'
         )
 
     paths = "\n  ".join(path_elements)
@@ -115,28 +127,23 @@ def render_satin_mask(
     scale: int = 4,
     antialias: bool = False,
 ) -> dict[str, Any]:
-    """
-    Render only Satin-assigned SVG paths to a black/white PNG mask image.
+    """Render a visible Satin compositing mask.
 
-    Output dict:
-    {
-        "image": PIL.Image,
-        "width_px": int,
-        "height_px": int,
-        "scale": float,
-        "satin_object_ids": list[str],
-        "excluded_object_ids": list[str],
-    }
+    All current Pane 3 objects are rendered into a temporary SVG in order.
+    Satin objects are black (#000000).
+    Fill/Skip/Background/unset objects are white (#ffffff) and can knock out
+    earlier black Satin objects, matching the visual stacking of the traced SVG.
 
-    The renderer uses a temporary SVG containing only Satin paths, rendered by
-    CairoSVG at the requested scale. The returned image is L-mode; call
-    clean_binary_mask() to threshold it to pure black/white.
+    Returns:
+        dict with image (PIL.Image), dimensions, scale, satin_object_ids,
+        and excluded_object_ids.
     """
     if scale <= 0:
         raise ValueError("scale must be greater than zero")
     if svg_w <= 0 or svg_h <= 0:
         raise ValueError("svg_w and svg_h must be greater than zero")
 
+    # ── Satin-only IDs for reporting ────────────────────────────────────
     satin_objects = collect_satin_objects(objects, assignments)
     satin_ids = [_object_id(obj) for obj in satin_objects if _object_id(obj) is not None]
     satin_id_set = set(satin_ids)
@@ -144,9 +151,10 @@ def render_satin_mask(
     all_ids = [_object_id(obj) for obj in (objects or [])]
     excluded_ids = [obj_id for obj_id in all_ids if obj_id is not None and obj_id not in satin_id_set]
 
+    # ── Compositing mask SVG (all objects, coloured by assignment) ──────
     width_px = int(round(float(svg_w) * scale))
     height_px = int(round(float(svg_h) * scale))
-    svg_text = _build_satin_only_svg(satin_objects, svg_w, svg_h)
+    svg_text = _build_compositing_mask_svg(objects, assignments, svg_w, svg_h)
 
     png_data = cairosvg.svg2png(
         bytestring=svg_text.encode("utf-8"),
@@ -461,10 +469,219 @@ def clean_centerline_polylines(
     return cleaned
 
 
+def _render_object_label_map(
+    objects: list[dict[str, Any]],
+    assignments: dict[str, Any],
+    svg_w: float,
+    svg_h: float,
+    scale: int = 4,
+) -> tuple[Image.Image | None, list[dict[str, Any]], dict[str, int]]:
+    """Render each Satin object with a unique grayscale fill.
+
+    Returns:
+        (label_map_image, satin_objects, object_id_to_index)
+        - label_map_image: L-mode PIL Image (mask_w x mask_h) where pixel value =
+          satin_object_index + 1, or 0 for background / non-Satin areas.
+        - satin_objects: list of Satin objects in render order.
+        - object_id_to_index: dict mapping object id -> index in satin_objects.
+    """
+    satin_objects = [obj for obj in (objects or [])
+                     if _object_id(obj) is not None
+                     and _is_satin_assignment(assignments.get(str(_object_id(obj))))]
+
+    if not satin_objects:
+        return None, [], {}
+
+    width = _format_number(svg_w)
+    height = _format_number(svg_h)
+    width_px = int(round(float(svg_w) * scale))
+    height_px = int(round(float(svg_h) * scale))
+
+    object_id_to_index: dict[str, int] = {}
+    path_elements: list[str] = []
+    for idx, obj in enumerate(satin_objects):
+        d = obj.get("d")
+        if not d:
+            continue
+        obj_id = str(_object_id(obj))
+        label = idx + 1  # 1-based so 0 = background
+        fill_color = f"#{label:02x}{label:02x}{label:02x}"
+        object_id_to_index[obj_id] = idx
+        tx = float(obj.get("tx") or 0.0)
+        ty = float(obj.get("ty") or 0.0)
+        transform = ""
+        if tx or ty:
+            transform = f' transform="translate({_format_number(tx)} {_format_number(ty)})"'
+        path_elements.append(
+            f'<path d="{escape(str(d))}" fill="{fill_color}" stroke="none"{transform}/>'
+        )
+
+    if not path_elements:
+        return None, [], {}
+
+    paths = "\n  ".join(path_elements)
+    svg_text = (
+        f'<svg xmlns="http://www.w3.org/2000/svg"'
+        f' width="{width}" height="{height}"'
+        f' viewBox="0 0 {width} {height}">\n'
+        f'  <rect x="0" y="0" width="{width}" height="{height}" fill="#000000"/>\n'
+        f'  {paths}\n'
+        f'</svg>\n'
+    )
+
+    try:
+        png_data = cairosvg.svg2png(
+            bytestring=svg_text.encode("utf-8"),
+            output_width=width_px,
+            output_height=height_px,
+        )
+    except Exception:
+        return None, [], {}
+
+    if png_data is None:
+        return None, [], {}
+
+    img = Image.open(BytesIO(png_data)).convert("L")
+    return img, satin_objects, object_id_to_index
+
+
+def split_polylines_at_object_boundaries(
+    polylines: list[dict[str, Any]],
+    objects: list[dict[str, Any]],
+    assignments: dict[str, Any],
+    svg_w: float,
+    svg_h: float,
+    scale: int = 4,
+    object_label_map: Image.Image | None = None,
+    satin_objects: list[dict[str, Any]] | None = None,
+    object_id_to_index: dict[str, int] | None = None,
+) -> list[dict[str, Any]]:
+    """Split polylines wherever the centreline crosses a boundary between two Satin objects.
+
+    Uses a label map (rendered with _render_object_label_map) to determine which
+    Satin object owns each point on the polyline. When consecutive points belong
+    to different Satin objects, a split node is inserted at the midpoint and the
+    polyline is broken into two (or more) separate polylines.
+
+    Each resulting polyline carries a ``source_object_ids`` list populated with
+    the Pane 3 object id(s) that contributed to it.
+
+    If label rendering fails or no boundaries are found, the original polylines
+    are returned unchanged (with empty source_object_ids).
+    """
+    if not polylines:
+        return []
+
+    # Build label map if not provided
+    label_map: Image.Image | None = object_label_map
+    _satin_objects: list[dict[str, Any]] = list(satin_objects or [])
+    _oid_to_idx: dict[str, int] = dict(object_id_to_index or {})
+
+    if label_map is None:
+        label_map, _satin_objects, _oid_to_idx = _render_object_label_map(
+            objects, assignments, svg_w, svg_h, scale
+        )
+
+    if label_map is None:
+        # No Satin objects — return original polylines with empty source_object_ids
+        return [dict(p, source_object_ids=[]) for p in polylines]
+
+    # Build reverse lookup: label_value -> object_id  (label = satin_index + 1)
+    idx_to_obj_id: dict[int, str] = {}
+    for obj_id, idx in _oid_to_idx.items():
+        idx_to_obj_id[idx + 1] = obj_id
+
+    result: list[dict[str, Any]] = []
+    split_count = 0
+
+    for polyline in polylines or []:
+        points = polyline.get("points", [])
+        if len(points) < 2:
+            result.append(dict(polyline, source_object_ids=[]))
+            continue
+
+        # Sample label at each point (in SVG coordinates, label map is at mask scale)
+        point_labels: list[int | None] = []
+        for px, py in points:
+            sx = int(round(float(px) * scale))
+            sy = int(round(float(py) * scale))
+            if 0 <= sx < label_map.width and 0 <= sy < label_map.height:
+                pixel = label_map.getpixel((sx, sy))
+                label: int = int(pixel) if isinstance(pixel, (int, float)) else 0
+                point_labels.append(label if label > 0 else None)
+            else:
+                point_labels.append(None)
+
+        # If every point has the same label (or all None), no split needed
+        unique_labels = {l for l in point_labels if l is not None}
+        if len(unique_labels) <= 1:
+            # All same object (or all background/None) — no split
+            source_ids: list[str] = []
+            lab = next((l for l in point_labels if l is not None), None)
+            if lab is not None:
+                oid = idx_to_obj_id.get(lab)
+                if oid is not None:
+                    source_ids = [oid]
+            result.append(dict(polyline, source_object_ids=source_ids))
+            continue
+
+        # Walk the points, split where label changes
+        segments: list[dict[str, Any]] = []
+        current_points: list[list[float]] = [list(points[0])]
+        current_label: int | None = point_labels[0]
+
+        for i in range(1, len(points)):
+            this_label = point_labels[i]
+
+            if (this_label is not None and current_label is not None
+                    and this_label != current_label):
+                # Boundary detected — insert split at midpoint between points[i-1] and points[i]
+                mid_x = (float(points[i - 1][0]) + float(points[i][0])) / 2.0
+                mid_y = (float(points[i - 1][1]) + float(points[i][1])) / 2.0
+                current_points.append([mid_x, mid_y])
+
+                if len(current_points) >= 2:
+                    src_id = idx_to_obj_id.get(current_label, "")
+                    segments.append({
+                        "points": [list(p) for p in current_points],
+                        "source_object_ids": [src_id] if src_id else [],
+                    })
+                split_count += 1
+
+                # Start new segment from split point
+                current_points = [[mid_x, mid_y], [float(points[i][0]), float(points[i][1])]]
+                current_label = this_label
+            else:
+                current_points.append([float(points[i][0]), float(points[i][1])])
+                current_label = current_label if current_label is not None else this_label
+
+        # Final segment
+        if len(current_points) >= 2:
+            src_id = idx_to_obj_id.get(current_label, "") if current_label is not None else ""
+            segments.append({
+                "points": [list(p) for p in current_points],
+                "source_object_ids": [src_id] if src_id else [],
+            })
+
+        # Turn segments into polylines — merged back if only one (no actual split)
+        base_id = polyline.get("id", "cline")
+        for seg_idx, seg in enumerate(segments):
+            seg_points = _dedupe_consecutive_points(seg["points"])
+            if len(seg_points) < 2:
+                continue
+            poly_id = f"{base_id}_b{seg_idx}" if len(segments) > 1 else f"{base_id}"
+            made = _make_polyline(poly_id, seg_points)
+            if made is not None:
+                made["source_object_ids"] = seg["source_object_ids"]
+                result.append(made)
+
+    return result
+
+
 def build_centerline_graph(polylines: list[dict[str, Any]], snap_distance: float = 3.0) -> dict[str, Any]:
     """Build a simple endpoint-snapped graph from centerline polylines."""
     node_points: list[list[float]] = []
-    edge_specs: list[tuple[str, int, int, list[list[float]], float]] = []
+    edge_specs: list[tuple[str, int, int, list[list[float]], float, list[str]]] = []
 
     def node_for(point: list[float]) -> int:
         for idx, existing in enumerate(node_points):
@@ -481,10 +698,12 @@ def build_centerline_graph(polylines: list[dict[str, Any]], snap_distance: float
             continue
         source_idx = node_for(points[0])
         target_idx = node_for(points[-1])
-        edge_specs.append((f"edge_{edge_index}", source_idx, target_idx, points, _polyline_length(points)))
+        edge_specs.append((f"edge_{edge_index}", source_idx, target_idx, points, _polyline_length(points),
+                           polyline.get("source_object_ids", [])))
 
     degrees = [0 for _ in node_points]
-    for _, source_idx, target_idx, _, _ in edge_specs:
+    for spec in edge_specs:
+        _, source_idx, target_idx, _, _, _ = spec
         degrees[source_idx] += 1
         degrees[target_idx] += 1
 
@@ -501,17 +720,53 @@ def build_centerline_graph(polylines: list[dict[str, Any]], snap_distance: float
         })
 
     edges: list[dict[str, Any]] = []
-    for edge_id, source_idx, target_idx, points, length in edge_specs:
+    for edge_id, source_idx, target_idx, points, length, source_ids in edge_specs:
         edges.append({
             "id": edge_id,
             "source": f"node_{source_idx + 1}",
             "target": f"node_{target_idx + 1}",
             "points": points,
             "length": length,
-            "source_object_ids": [],
+            "source_object_ids": list(source_ids),
             "priority": None,
             "assignment": "unmarked",
         })
+
+    return {"nodes": nodes, "edges": edges}
+
+
+def tag_split_boundary_nodes(graph: dict[str, Any]) -> dict[str, Any]:
+    """Walk graph nodes and tag any node that connects edges with different source_object_ids.
+
+    Returns the graph with node types updated — nodes that sit between edges
+    belonging to different Pane 3 Satin objects are typed ``manual_split_boundary``.
+    """
+    nodes = list(graph.get("nodes", []) or [])
+    edges = list(graph.get("edges", []) or [])
+
+    if not nodes or not edges:
+        return graph
+
+    # Build map: node_id -> set of source_object_ids from connected edges
+    node_source_ids: dict[str, set[str]] = {}
+    for edge in edges:
+        src = str(edge.get("source", ""))
+        tgt = str(edge.get("target", ""))
+        obj_ids = set(str(s) for s in (edge.get("source_object_ids") or []))
+        for nid in (src, tgt):
+            if nid:
+                if nid not in node_source_ids:
+                    node_source_ids[nid] = set()
+                node_source_ids[nid].update(obj_ids)
+
+    # Tag nodes that have >1 distinct satin object id
+    for node in nodes:
+        nid = str(node.get("id", ""))
+        obj_ids = node_source_ids.get(nid, set())
+        # Filter out empty ids
+        real_ids = {oid for oid in obj_ids if oid}
+        if len(real_ids) >= 2:
+            node["type"] = "manual_split_boundary"
 
     return {"nodes": nodes, "edges": edges}
 
@@ -555,8 +810,18 @@ def build_road_graph_overlay_svg(
     for node in graph.get("nodes", []) or []:
         node_id = escape(str(node.get("id", "")))
         node_type = str(node.get("type", ""))
-        fill = "#ff7a00" if node_type == "junction" else ("#30e37a" if node_type == "endpoint" else "#d9d55a")
-        radius = "3.2" if node_type == "junction" else "2.2"
+        if node_type == "manual_split_boundary":
+            fill = "#ff00ff"  # magenta for split boundaries
+            radius = "3.6"
+        elif node_type == "junction":
+            fill = "#ff7a00"
+            radius = "3.2"
+        elif node_type == "endpoint":
+            fill = "#30e37a"
+            radius = "2.2"
+        else:
+            fill = "#d9d55a"
+            radius = "2.2"
         elements.append(
             f'  <circle data-node-id="{node_id}" cx="{_format_number(node.get("x"))}" cy="{_format_number(node.get("y"))}" r="{radius}" fill="{fill}" stroke="#ffffff" stroke-width="0.8"/>'
         )
