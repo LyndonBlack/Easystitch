@@ -912,4 +912,87 @@ Patch clean_centerline_polylines so closed-loop AutoTrace subpaths are preserved
 - refactor/easystitch_core/geometry.py remains dirty from earlier rejected medial-axis work and was not touched.
 
 ### Next step
-Proceed to checklist Step 5 only: /api/roads/centerline, using the corrected multi-subpath parser and closed-loop-safe cleaner.
+Proceed to checklist Step 6 only: UI control for centerline endpoint / debug preview, if requested by checklist/user.
+
+---
+
+## 2026-05-24 11:25:11 IST - Step 5 implementation
+
+### Current objective
+Implement checklist Step 5 only: /api/roads/centerline.
+
+### Files changed
+- path: /home/lyndon/AI/Easystitch/refactor/app.py
+- function/section changed: imports and new /api/roads/centerline route
+- reason for change: expose already-tested Satin mask -> AutoTrace -> parser -> cleaner -> graph -> overlay pipeline through backend API
+- whether code was added, removed, or modified: added route and imported Step 4 functions
+
+- path: /home/lyndon/AI/Easystitch/refactor/tests/test_road_centerline_endpoint.py
+- function/section changed: new endpoint regression tests
+- reason for change: verify endpoint returns graph, debug mask/autotrace/overlay outputs, useful stats, and respects current manual-split child assignments
+- whether code was added, removed, or modified: added test file
+
+### Commands run
+- command: pytest tests/test_road_centerline_endpoint.py -q
+- success/failure: expected failure before implementation
+- important output/error: 2 failed with 404 NOT FOUND because /api/roads/centerline did not exist yet
+
+- command: pytest tests/test_road_centerline_endpoint.py -q
+- success/failure: success after implementation
+- important output/error: 2 passed
+
+- command: python3 -m py_compile app.py easystitch_core/road_marker.py easystitch_core/__init__.py && pytest tests -q
+- success/failure: success
+- important output/error: 13 passed
+
+- command: python3 inline Pane 3-style payload smoke using test_traced.svg
+- success/failure: success
+- important output/error: status 200 ok True; raw_polyline_count=67; clean_polyline_count=59; graph_node_count=105; graph_edge_count=59; satin_object_count=13; excluded_object_count=1; debug keys mask_png_base64/autotrace_svg/overlay_svg
+
+- command: date '+%Y-%m-%d %H:%M:%S %Z' && git status --short
+- success/failure: success
+- important output/error: timestamp 2026-05-24 11:25:11 IST; geometry.py remains unrelated dirty file
+
+### Tests performed
+- what was tested: /api/roads/centerline inline fake payload
+- input file used: inline Flask test client payload
+- expected result: graph returned; debug.mask_png_base64, debug.autotrace_svg, debug.overlay_svg returned; useful stats returned; Fill/Skip excluded
+- actual result: pass
+- pass/fail: pass
+
+- what was tested: /api/roads/centerline manual split child assignment behavior
+- input file used: inline Flask test client payload with stale parent assignment plus child_1 Satin and child_2 Fill
+- expected result: only child_1 included; child_2 excluded; stale parent ignored
+- actual result: pass
+- pass/fail: pass
+
+- what was tested: Pane 3-style payload from existing traced test asset
+- input file used: /home/lyndon/AI/Easystitch/test_assets/test_traced.svg parsed through parse_traced_svg_for_structure
+- expected result: endpoint runs full pipeline and returns graph/debug/stats without UI wiring
+- actual result: pass; raw=67, clean=59, nodes=105, edges=59
+- pass/fail: pass
+
+- what was tested: full active regression suite
+- input file used: refactor/tests
+- expected result: all active tests pass
+- actual result: 13 passed
+- pass/fail: pass
+
+### Debug outputs created
+- No new files created by Step 5 endpoint tests.
+- Endpoint response includes debug.mask_png_base64, debug.autotrace_svg, and debug.overlay_svg in-memory.
+
+### Decisions made
+- /api/roads/centerline uses only the existing tested pipeline:
+  collect_satin_objects -> render_satin_mask -> clean_binary_mask -> run_autotrace_centerline -> parse_centerline_svg_to_polylines -> clean_centerline_polylines -> build_centerline_graph -> build_road_graph_overlay_svg
+- No UI graph wiring was added.
+- No stitch-generation changes were made.
+- No priority/yield logic was added.
+- Endpoint accepts current Pane 3 objects and assignments, so post-manual-split child assignments are respected.
+
+### Issues / blockers
+- None for Step 5.
+- refactor/easystitch_core/geometry.py remains dirty from earlier rejected medial-axis work and was not touched.
+
+### Next step
+Proceed to checklist Step 6 only when requested.

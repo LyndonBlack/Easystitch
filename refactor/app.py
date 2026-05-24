@@ -21,6 +21,11 @@ from easystitch_core.road_marker import (
     collect_satin_objects,
     render_satin_mask,
     clean_binary_mask,
+    run_autotrace_centerline,
+    parse_centerline_svg_to_polylines,
+    clean_centerline_polylines,
+    build_centerline_graph,
+    build_road_graph_overlay_svg,
 )
 from easystitch_core.export_pyembroidery import export_stitch_plan_to_jef, export_stitch_plan_to_vp3
 
@@ -369,6 +374,107 @@ def create_app(initial_input: str | None, output_dir: str) -> Flask:
                     "mask_png_base64": mask_png_base64,
                     "satin_object_count": len(satin_objects),
                     "excluded_object_count": len(mask_result["excluded_object_ids"]),
+                },
+            })
+        except Exception as e:
+            import traceback
+            return jsonify({"ok": False, "error": str(e), "trace": traceback.format_exc()})
+
+    @app.route("/api/roads/centerline", methods=["POST"])
+    def api_roads_centerline():
+        try:
+            body = request.get_json() or {}
+            settings = body.get("settings") or {}
+
+            objects = body.get("objects") or []
+            assignments = body.get("assignments") or {}
+            svg_w = body.get("svg_w")
+            svg_h = body.get("svg_h")
+
+            if svg_w is None or svg_h is None:
+                return jsonify({"ok": False, "error": "Missing svg_w or svg_h"})
+            if not isinstance(objects, list):
+                return jsonify({"ok": False, "error": "objects must be a list"})
+            if not isinstance(assignments, dict):
+                return jsonify({"ok": False, "error": "assignments must be an object"})
+
+            svg_w_f = float(svg_w)
+            svg_h_f = float(svg_h)
+            scale = int(settings.get("mask_scale", 4))
+            threshold = int(settings.get("threshold", 128))
+            median_filter = bool(settings.get("median_filter", True))
+            min_length_px = float(settings.get("min_length_px", 5.0))
+            simplify_tolerance = float(settings.get("simplify_tolerance", 1.0))
+            snap_distance = float(settings.get("snap_distance", 3.0))
+            despeckle_level = int(settings.get("despeckle_level", 8))
+            filter_iterations = int(settings.get("filter_iterations", 4))
+            error_threshold = float(settings.get("error_threshold", 2.0))
+            autotrace_path = str(settings.get("autotrace_path") or "autotrace")
+
+            mask_result = render_satin_mask(
+                objects,
+                assignments,
+                svg_w_f,
+                svg_h_f,
+                scale=scale,
+                antialias=False,
+            )
+            clean_image = clean_binary_mask(
+                mask_result["image"],
+                median_filter=median_filter,
+                threshold=threshold,
+            )
+
+            autotrace_svg = run_autotrace_centerline(
+                clean_image,
+                autotrace_path=autotrace_path,
+                despeckle_level=despeckle_level,
+                filter_iterations=filter_iterations,
+                error_threshold=error_threshold,
+            )
+            raw_polylines = parse_centerline_svg_to_polylines(autotrace_svg, scale=scale)
+            clean_polylines = clean_centerline_polylines(
+                raw_polylines,
+                min_length_px=min_length_px,
+                simplify_tolerance=simplify_tolerance,
+            )
+            graph = build_centerline_graph(clean_polylines, snap_distance=snap_distance)
+            satin_objects = collect_satin_objects(objects, assignments)
+            overlay_svg = build_road_graph_overlay_svg(svg_w_f, svg_h_f, satin_objects, graph)
+
+            png_buffer = BytesIO()
+            clean_image.save(png_buffer, format="PNG")
+            mask_png_base64 = base64.b64encode(png_buffer.getvalue()).decode("ascii")
+
+            stats = {
+                "satin_object_count": len(satin_objects),
+                "excluded_object_count": len(mask_result["excluded_object_ids"]),
+                "raw_polyline_count": len(raw_polylines),
+                "clean_polyline_count": len(clean_polylines),
+                "graph_node_count": len(graph.get("nodes", [])),
+                "graph_edge_count": len(graph.get("edges", [])),
+                "mask_width_px": mask_result["width_px"],
+                "mask_height_px": mask_result["height_px"],
+                "mask_scale": mask_result["scale"],
+            }
+
+            return jsonify({
+                "ok": True,
+                "graph": graph,
+                "mask": {
+                    "width_px": mask_result["width_px"],
+                    "height_px": mask_result["height_px"],
+                    "scale": mask_result["scale"],
+                    "svg_w": svg_w_f,
+                    "svg_h": svg_h_f,
+                    "satin_object_ids": mask_result["satin_object_ids"],
+                    "excluded_object_ids": mask_result["excluded_object_ids"],
+                },
+                "stats": stats,
+                "debug": {
+                    "mask_png_base64": mask_png_base64,
+                    "autotrace_svg": autotrace_svg,
+                    "overlay_svg": overlay_svg,
                 },
             })
         except Exception as e:
