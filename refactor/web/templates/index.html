@@ -275,6 +275,18 @@
         </div>
 
         <div class="card">
+          <h2>Satin Road Graph</h2>
+          <div style="display:flex;gap:6px;flex-wrap:wrap">
+            <button class="btn primary" id="road-graph-build-btn" onclick="RoadMarker.buildCenterlineGraph()">Build Centerline Graph</button>
+            <button class="btn" id="road-graph-clear-btn" onclick="RoadMarker.clearOverlay()">Clear Road Overlay</button>
+          </div>
+          <div class="meta" id="road-graph-stats" style="margin-top:8px">No centerline graph built yet.</div>
+          <div id="road-graph-overlay" class="preview-img-wrap" style="margin-top:8px;min-height:120px;max-height:400px;overflow:auto;background:#fff;border:1px solid #334;border-radius:6px;display:flex;align-items:center;justify-content:center;color:#555">
+            Road graph overlay will appear here.
+          </div>
+        </div>
+
+        <div class="card">
           <h2>Object Detail</h2>
           <div class="meta" id="structure-detail">Load a traced SVG to begin.</div>
         </div>
