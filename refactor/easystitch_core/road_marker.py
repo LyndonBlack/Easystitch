@@ -1,1205 +1,494 @@
-#!/usr/bin/env python3
-"""
-EasyStitch Core — Road-marking graph (Stage 0A backend).
+"""Satin V2 road-graph mask preparation.
 
-Data model for the road-marking system:
-  - Rung:   a crossbar between two boundary points.
-  - Node:   a decision point on the polygon boundary.
-  - Edge:   a boundary segment connecting two nodes.
-  - RoadMarkedPath: top-level container that ties a polygon to its
-    road-marking graph.
+This module is intentionally limited to checklist Step 1:
+- collect_satin_objects
+- render_satin_mask
+- clean_binary_mask
 
-Initial graph builder (Stage 0A):
-  Detects sharp corners on the polygon exterior, uses the sharpest
-  corner as the circuit-break for closed loops, and produces nodes +
-  edges with a clockwise stitch-order.  No junction / narrow-waist
-  detection is performed here.
+Do not add AutoTrace, graph parsing, UI, or stitch-generation logic here until
+those checklist steps are explicitly started.
 """
+
+from __future__ import annotations
 
 import math
-import uuid
-from dataclasses import dataclass, field
-from typing import Optional
+import os
+import re
+import shutil
+import subprocess
+import tempfile
+import xml.etree.ElementTree as ET
+from io import BytesIO
+from typing import Any, cast
+from xml.sax.saxutils import escape
 
-from shapely.geometry import Polygon, LineString, Point
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Data model
-# ─────────────────────────────────────────────────────────────────────────────
-
-@dataclass
-class Rung:
-    """A crossbar (guide-rung) between two points on the boundary."""
-    id: str
-    p1: tuple   # (x, y)
-    p2: tuple   # (x, y)
-
-    def to_dict(self) -> dict:
-        return {
-            "id": self.id,
-            "p1": list(self.p1),
-            "p2": list(self.p2),
-        }
+import cairosvg
+from PIL import Image, ImageFilter
+from svgpathtools import Line, parse_path
 
 
-@dataclass
-class Node:
-    """A decision / stopping point on the polygon boundary."""
-    id: str
-    type: str          # "sharp_corner" | "user_cut" | "manual_yield" | "endpoint"
-    position: tuple    # (x, y)
-
-    def to_dict(self) -> dict:
-        return {
-            "id": self.id,
-            "type": self.type,
-            "position": list(self.position),
-        }
+SATIN_ASSIGNMENT = "satin"
 
 
-@dataclass
-class Edge:
-    """A directed boundary segment between two adjacent nodes."""
-    id: str
-    priority: int = 0
-    start_node_id: str = ""
-    end_node_id: str = ""
-    start_rung_id: Optional[str] = None
-    end_rung_id: Optional[str] = None
-    yield_to_edge_id: Optional[str] = None
-
-    def to_dict(self) -> dict:
-        return {
-            "id": self.id,
-            "priority": self.priority,
-            "start_node_id": self.start_node_id,
-            "end_node_id": self.end_node_id,
-            "start_rung_id": self.start_rung_id,
-            "end_rung_id": self.end_rung_id,
-            "yield_to_edge_id": self.yield_to_edge_id,
-        }
+def _object_id(obj: dict[str, Any]) -> str | None:
+    """Return the Pane 3 object id, accepting only generic id field names."""
+    value = obj.get("id")
+    if value is None:
+        return None
+    return str(value)
 
 
-@dataclass
-class RoadMarkedPath:
-    """Top-level container: a polygon with its road-marking graph attached."""
-    path_id: str
-    rungs: dict        # id -> Rung
-    nodes: dict        # id -> Node
-    edges: dict        # id -> Edge
-    stitch_order: list  # list of edge ids, clockwise traversal
-    boundary_coords: list = field(default_factory=list)  # [[x,y],...] for overlay rendering
-
-    def to_dict(self) -> dict:
-        return {
-            "path_id": self.path_id,
-            "rungs": {k: v.to_dict() for k, v in self.rungs.items()},
-            "nodes": {k: v.to_dict() for k, v in self.nodes.items()},
-            "edges": {k: v.to_dict() for k, v in self.edges.items()},
-            "stitch_order": self.stitch_order,
-            "boundary_coords": self.boundary_coords,
-        }
+def _is_satin_assignment(value: Any) -> bool:
+    """Case-insensitive Satin assignment check."""
+    return isinstance(value, str) and value.strip().lower() == SATIN_ASSIGNMENT
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Graph builder (Stage 0A)
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _is_clockwise(coords: list) -> bool:
-    """Return True if the ring vertices are in clockwise order (signed area > 0)."""
-    area = 0.0
-    n = len(coords)
-    for i in range(n):
-        x1, y1 = coords[i]
-        x2, y2 = coords[(i + 1) % n]
-        area += (x2 - x1) * (y2 + y1)
-    return area > 0
-
-
-def _process_boundary(bound_poly: Polygon, coords: list, node_offset: int,
-                     edge_offset: int) -> tuple[dict, dict, list, list]:
+def collect_satin_objects(objects: list[dict[str, Any]], assignments: dict[str, Any]) -> list[dict[str, Any]]:
     """
-    Detect sharp corners on a single boundary and build its sub-graph
-    (nodes, edges).  Returns the three dicts + ordered node ids list.
-    Uses globally-scoped offsets so IDs are unique across boundaries.
+    Return only objects currently assigned as Satin.
+
+    Rules from the checklist:
+    - include only assignment == "satin" case-insensitively
+    - exclude fill, skip, background, unset, and missing assignments
+    - use the current Pane 3 object list after manual splits
+    - preserve object fields such as id, d, color, tx, and ty
     """
-    from .geometry import detect_sharp_corners
+    satin_objects: list[dict[str, Any]] = []
 
-    if len(coords) > 1 and coords[0] == coords[-1]:
-        coords = coords[:-1]
-    n = len(coords)
-    if n < 3:
-        return {}, {}, [], list(coords)
-
-    raw_corners = detect_sharp_corners(bound_poly, angle_threshold_deg=150.0,
-                                       spatial_radius_px=12.0)
-
-    if not raw_corners:
-        # No corners: create two synthetic nodes at most-distant vertices
-        best_dist = -1.0
-        best_pair = (0, n // 2)
-        for i in range(n):
-            for j in range(i + 1, n):
-                d = math.hypot(coords[i][0] - coords[j][0],
-                               coords[i][1] - coords[j][1])
-                if d > best_dist:
-                    best_dist = d
-                    best_pair = (i, j)
-        i0, i1 = best_pair
-        nodes = {
-            f"n{node_offset}": Node(id=f"n{node_offset}", type="endpoint",
-                                    position=(float(coords[i0][0]), float(coords[i0][1]))),
-            f"n{node_offset+1}": Node(id=f"n{node_offset+1}", type="endpoint",
-                                      position=(float(coords[i1][0]), float(coords[i1][1]))),
-        }
-        edges = {
-            f"e{edge_offset}": Edge(id=f"e{edge_offset}", priority=0,
-                                    start_node_id=f"n{node_offset}",
-                                    end_node_id=f"n{node_offset+1}"),
-            f"e{edge_offset+1}": Edge(id=f"e{edge_offset+1}", priority=0,
-                                      start_node_id=f"n{node_offset+1}",
-                                      end_node_id=f"n{node_offset}"),
-        }
-        return nodes, edges, [f"e{edge_offset}", f"e{edge_offset+1}"], list(coords)
-
-    # Index each corner by its position on the ring
-    corner_by_index: dict[int, tuple] = {}
-    for pos, angle in raw_corners:
-        px, py = pos
-        best_i = None
-        best_d = float("inf")
-        for i, (cx, cy) in enumerate(coords):
-            d = math.hypot(px - cx, py - cy)
-            if d < best_d:
-                best_d = d
-                best_i = i
-        if best_i is not None and best_d < 1.0:
-            corner_by_index[best_i] = (pos, angle)
-
-    sorted_indices = sorted(corner_by_index.keys())
-
-    # Circuit-break at sharpest corner
-    sharpest_idx = max(corner_by_index.keys(),
-                       key=lambda i: corner_by_index[i][1])
-    pivot = sorted_indices.index(sharpest_idx)
-    ordered_indices = sorted_indices[pivot:] + sorted_indices[:pivot]
-
-    # Clockwise
-    cw = _is_clockwise(coords)
-    if not cw:
-        ordered_indices = [ordered_indices[0]] + ordered_indices[:0:-1]
-
-    # Build nodes
-    nodes: dict = {}
-    for i, idx in enumerate(ordered_indices):
-        pos, angle = corner_by_index[idx]
-        nid = f"n{node_offset + i}"
-        nodes[nid] = Node(id=nid, type="sharp_corner",
-                          position=(float(pos[0]), float(pos[1])))
-
-    # Build edges (cyclic)
-    m = len(ordered_indices)
-    edges: dict = {}
-    s_order: list = []
-    for i in range(m):
-        eid = f"e{edge_offset + i}"
-        start_nid = f"n{node_offset + i}"
-        end_nid = f"n{node_offset + (i + 1) % m}"
-        edges[eid] = Edge(id=eid, priority=0,
-                          start_node_id=start_nid, end_node_id=end_nid)
-        s_order.append(eid)
-
-    # Boundary coords for this boundary
-    bound_coords = [[float(c[0]), float(c[1])] for c in coords]
-
-    return nodes, edges, s_order, bound_coords
-
-
-def _subdivide_long_edges(nodes: dict, edges: dict, stitch_order: list,
-                         max_edge_len: float = 80.0):
-    """
-    Insert intermediate nodes on edges longer than max_edge_len so that
-    gentle curves have enough anchor points for the user to split at.
-    Modifies nodes, edges, and stitch_order in-place.
-    """
-    # Derive next IDs from current max to avoid collisions
-    def _extract_num(s, prefix):
-        try: return int(s[len(prefix):])
-        except ValueError: return -1
-    max_n = max((_extract_num(k, "n") for k in nodes), default=-1)
-    max_e = max((_extract_num(k, "e") for k in edges), default=-1)
-    next_n = max_n + 1
-    next_e = max_e + 1
-
-    # Build a current list of edge IDs since we'll be modifying edges
-    current_eids = list(edges.keys())
-
-    for eid in current_eids:
-        if eid not in edges:
+    for obj in objects or []:
+        obj_id = _object_id(obj)
+        if obj_id is None:
             continue
-        edge = edges[eid]
-        sn = nodes.get(edge.start_node_id)
-        en = nodes.get(edge.end_node_id)
-        if not sn or not en:
+        if _is_satin_assignment(assignments.get(obj_id)):
+            satin_objects.append(dict(obj))
+
+    return satin_objects
+
+
+def _format_number(value: Any, default: float = 0.0) -> str:
+    """Format a numeric SVG attribute defensively."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        number = default
+    return f"{number:g}"
+
+
+def _build_satin_only_svg(
+    satin_objects: list[dict[str, Any]],
+    svg_w: float,
+    svg_h: float,
+) -> str:
+    """Build a temporary SVG containing only black-filled Satin paths."""
+    width = _format_number(svg_w)
+    height = _format_number(svg_h)
+
+    path_elements: list[str] = []
+    for obj in satin_objects:
+        d = obj.get("d")
+        if not d:
             continue
 
-        length = math.hypot(en.position[0] - sn.position[0],
-                            en.position[1] - sn.position[1])
-        if length <= max_edge_len:
-            continue
+        tx = float(obj.get("tx") or 0.0)
+        ty = float(obj.get("ty") or 0.0)
+        transform = ""
+        if tx or ty:
+            transform = f' transform="translate({_format_number(tx)} {_format_number(ty)})"'
 
-        # How many subdivisions?  Aim for max_edge_len spacing.
-        n_splits = int(length / max_edge_len)
-        if n_splits < 1:
-            continue
+        path_elements.append(
+            f'<path d="{escape(str(d))}" fill="#000000" stroke="none"{transform}/>'
+        )
 
-        # Build the chain: start node → intermediates → end node
-        chain_nodes = [sn]
-        for k in range(1, n_splits + 1):
-            t = k / (n_splits + 1)
-            px = sn.position[0] + t * (en.position[0] - sn.position[0])
-            py = sn.position[1] + t * (en.position[1] - sn.position[1])
-            nid = f"n{next_n}"
-            next_n += 1
-            nodes[nid] = Node(id=nid, type="sharp_corner", position=(px, py))
-            chain_nodes.append(nodes[nid])
-        chain_nodes.append(en)
-
-        # Replace the long edge with a chain of shorter edges
-        chain_edges = []
-        for k in range(len(chain_nodes) - 1):
-            neid = f"e{next_e}"
-            next_e += 1
-            edges[neid] = Edge(
-                id=neid,
-                priority=edge.priority,
-                start_node_id=chain_nodes[k].id,
-                end_node_id=chain_nodes[k + 1].id,
-                start_rung_id=edge.start_rung_id if k == 0 else None,
-                end_rung_id=edge.end_rung_id if k == len(chain_nodes) - 2 else None,
-                yield_to_edge_id=edge.yield_to_edge_id if k == 0 else None,
-            )
-            chain_edges.append(neid)
-
-        # Replace in stitch_order
-        try:
-            idx = stitch_order.index(eid)
-            stitch_order[idx:idx + 1] = chain_edges
-        except ValueError:
-            stitch_order.extend(chain_edges)
-
-        # Remove the original long edge
-        del edges[eid]
+    paths = "\n  ".join(path_elements)
+    return f'''<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">
+  <rect x="0" y="0" width="{width}" height="{height}" fill="#ffffff"/>
+  {paths}
+</svg>
+'''
 
 
-def _merge_close_junctions(nodes: dict, edges: dict, stitch_order: list,
-                          radius: float = 15.0):
+def render_satin_mask(
+    objects: list[dict[str, Any]],
+    assignments: dict[str, Any],
+    svg_w: float,
+    svg_h: float,
+    scale: int = 4,
+    antialias: bool = False,
+) -> dict[str, Any]:
     """
-    Merge junction nodes that are within `radius` pixels of each other.
-    The surviving node gets the lowest ID; all edges referencing merged
-    nodes are updated to point to the survivor.
+    Render only Satin-assigned SVG paths to a black/white PNG mask image.
+
+    Output dict:
+    {
+        "image": PIL.Image,
+        "width_px": int,
+        "height_px": int,
+        "scale": float,
+        "satin_object_ids": list[str],
+        "excluded_object_ids": list[str],
+    }
+
+    The renderer uses a temporary SVG containing only Satin paths, rendered by
+    CairoSVG at the requested scale. The returned image is L-mode; call
+    clean_binary_mask() to threshold it to pure black/white.
     """
-    # Collect junction nodes
-    jnodes = [(nid, n) for nid, n in nodes.items() if n.type == "junction"]
-    if len(jnodes) < 2:
-        return
+    if scale <= 0:
+        raise ValueError("scale must be greater than zero")
+    if svg_w <= 0 or svg_h <= 0:
+        raise ValueError("svg_w and svg_h must be greater than zero")
 
-    # Build merge groups (connected components within radius)
-    parents = {}
-    for nid, n in jnodes:
-        parents[nid] = nid
+    satin_objects = collect_satin_objects(objects, assignments)
+    satin_ids = [_object_id(obj) for obj in satin_objects if _object_id(obj) is not None]
+    satin_id_set = set(satin_ids)
 
-    def find(x):
-        while parents.get(x, x) != x:
-            parents[x] = parents.get(parents[x], parents[x])
-            x = parents[x]
-        return x
+    all_ids = [_object_id(obj) for obj in (objects or [])]
+    excluded_ids = [obj_id for obj_id in all_ids if obj_id is not None and obj_id not in satin_id_set]
 
-    def union(a, b):
-        ra, rb = find(a), find(b)
-        if ra != rb:
-            if ra < rb:
-                parents[rb] = ra
-            else:
-                parents[ra] = rb
+    width_px = int(round(float(svg_w) * scale))
+    height_px = int(round(float(svg_h) * scale))
+    svg_text = _build_satin_only_svg(satin_objects, svg_w, svg_h)
 
-    for i in range(len(jnodes)):
-        ni, nd = jnodes[i]
-        for j in range(i + 1, len(jnodes)):
-            nj, njd = jnodes[j]
-            d = math.hypot(nd.position[0] - njd.position[0],
-                           nd.position[1] - njd.position[1])
-            if d < radius:
-                union(ni, nj)
+    png_data = cairosvg.svg2png(
+        bytestring=svg_text.encode("utf-8"),
+        output_width=width_px,
+        output_height=height_px,
+    )
+    if png_data is None:
+        raise RuntimeError("CairoSVG did not return PNG data")
+    image = Image.open(BytesIO(cast(bytes, png_data))).convert("L")
 
-    # Build replacement map: each node ID maps to its surviving rep
-    rep = {}
-    for nid in parents:
-        rep[nid] = find(nid)
+    if not antialias:
+        image = clean_binary_mask(image, median_filter=False, threshold=128)
 
-    # If all junctions are in the same group, nothing to merge
-    unique_reps = set(rep.values())
-    if len(unique_reps) == len(jnodes):
-        return
-
-    # Average position for each group
-    group_positions = {}
-    for nid, n in jnodes:
-        g = rep[nid]
-        if g not in group_positions:
-            group_positions[g] = {"x": 0.0, "y": 0.0, "count": 0}
-        group_positions[g]["x"] += n.position[0]
-        group_positions[g]["y"] += n.position[1]
-        group_positions[g]["count"] += 1
-
-    for g, p in group_positions.items():
-        nodes[g].position = (p["x"] / p["count"], p["y"] / p["count"])
-
-    # Update edges to use surviving node
-    for eid, edge in edges.items():
-        if edge.start_node_id in rep:
-            edge.start_node_id = rep[edge.start_node_id]
-        if edge.end_node_id in rep:
-            edge.end_node_id = rep[edge.end_node_id]
-
-    # Remove merged-away nodes
-    for nid in list(nodes.keys()):
-        if nid in rep and rep[nid] != nid:
-            del nodes[nid]
+    return {
+        "image": image,
+        "width_px": width_px,
+        "height_px": height_px,
+        "scale": float(scale),
+        "satin_object_ids": satin_ids,
+        "excluded_object_ids": excluded_ids,
+    }
 
 
-def _dedup_points(points: list, radius: float = 5.0) -> list:
-    """Remove near-duplicate 2D points within radius."""
-    if not points:
-        return []
-    kept = [points[0]]
-    for p in points[1:]:
-        if all(math.hypot(p[0] - k[0], p[1] - k[1]) > radius for k in kept):
-            kept.append(p)
-    return kept
-
-
-def build_initial_graph(polygons: dict[str, Polygon]) -> RoadMarkedPath:
+def clean_binary_mask(image: Image.Image, median_filter: bool = True, threshold: int = 128) -> Image.Image:
     """
-    Stage 0A graph builder — centerline-based.
+    Convert a mask image to pure black/white L-mode.
 
-    Computes the centerline for each satin-path polygon.  Finds
-    junctions where centerlines from DIFFERENT paths cross.  Breaks
-    each centerline at junctions into edges (one per segment between
-    junction points).
-
-    Returns a RoadMarkedPath with all nodes (junctions) and edges.
-    No boundary outlines — the graph IS the centerlines.
+    Rules from the checklist:
+    - black = satin
+    - white = background
+    - no grey pixels in final mask
+    - optional 3x3 median filter
     """
-    from .geometry import compute_centerline
-    from shapely.geometry import MultiPoint
+    if image is None:
+        raise ValueError("image is required")
 
-    # ── 1. Compute centerlines ─────────────────────────────────────────
-    centerlines: dict[str, LineString] = {}
-    for path_id, poly in polygons.items():
-        if poly.is_empty:
-            continue
-        cl_pts = compute_centerline(poly)
-        if len(cl_pts) >= 2:
-            centerlines[path_id] = LineString(cl_pts)
+    threshold = max(0, min(255, int(threshold)))
+    result = image.convert("L")
 
-    if not centerlines:
-        return RoadMarkedPath(path_id="", rungs={}, nodes={}, edges={},
-                              stitch_order=[], boundary_coords=[])
+    if median_filter:
+        result = result.filter(ImageFilter.MedianFilter(size=3))
 
-    # ── 2. Find junctions where different centerlines cross ─────────────
-    raw_junctions: list[tuple[float, float]] = []
-    path_ids = sorted(centerlines.keys())
-    for i in range(len(path_ids)):
-        for j in range(i + 1, len(path_ids)):
-            cl_a = centerlines[path_ids[i]]
-            cl_b = centerlines[path_ids[j]]
+    lookup = [0 if pixel < threshold else 255 for pixel in range(256)]
+    return result.point(lookup, mode="L")
+
+
+def _polyline_length(points: list[list[float]]) -> float:
+    total = 0.0
+    for a, b in zip(points, points[1:]):
+        total += math.hypot(float(b[0]) - float(a[0]), float(b[1]) - float(a[1]))
+    return total
+
+
+def _normalise_point(point: Any) -> list[float]:
+    return [float(point[0]), float(point[1])]
+
+
+def _make_polyline(polyline_id: str, points: list[list[float]]) -> dict[str, Any] | None:
+    cleaned: list[list[float]] = []
+    for point in points:
+        p = _normalise_point(point)
+        if not cleaned or math.hypot(p[0] - cleaned[-1][0], p[1] - cleaned[-1][1]) > 1e-9:
+            cleaned.append(p)
+    if len(cleaned) < 2:
+        return None
+    return {"id": polyline_id, "points": cleaned, "length": _polyline_length(cleaned)}
+
+
+def run_autotrace_centerline(
+    mask_image: Image.Image,
+    autotrace_path: str = "autotrace",
+    despeckle_level: int = 8,
+    filter_iterations: int = 4,
+    error_threshold: float = 2.0,
+) -> str:
+    """Save mask to a temporary PNG, run AutoTrace --centerline, return SVG text."""
+    resolved = shutil.which(autotrace_path) if os.path.basename(autotrace_path) == autotrace_path else autotrace_path
+    if not resolved or not os.path.exists(resolved):
+        raise RuntimeError("AutoTrace not found. Install autotrace and ensure it is on PATH.")
+
+    if mask_image is None:
+        raise ValueError("mask_image is required")
+
+    with tempfile.TemporaryDirectory(prefix="easystitch_autotrace_") as tmp_dir:
+        mask_path = os.path.join(tmp_dir, "road_mask.png")
+        svg_path = os.path.join(tmp_dir, "road_centerline.svg")
+        clean_binary_mask(mask_image, median_filter=False, threshold=128).save(mask_path)
+
+        full_cmd = [
+            resolved,
+            "--centerline",
+            "--background-color", "FFFFFF",
+            "--output-format", "svg",
+            "--despeckle-level", str(int(despeckle_level)),
+            "--filter-iterations", str(int(filter_iterations)),
+            "--error-threshold", str(float(error_threshold)),
+            "--output-file", svg_path,
+            mask_path,
+        ]
+        minimal_cmd = [
+            resolved,
+            "--centerline",
+            "--background-color", "FFFFFF",
+            "--output-format", "svg",
+            "--output-file", svg_path,
+            mask_path,
+        ]
+
+        first = subprocess.run(full_cmd, capture_output=True, text=True, timeout=60, check=False)
+        if first.returncode != 0:
+            second = subprocess.run(minimal_cmd, capture_output=True, text=True, timeout=60, check=False)
+            if second.returncode != 0:
+                message = (second.stderr or second.stdout or first.stderr or first.stdout or "AutoTrace failed").strip()
+                raise RuntimeError(f"AutoTrace failed: {message}")
+
+        if not os.path.exists(svg_path):
+            raise RuntimeError("AutoTrace failed: output SVG was not created")
+        with open(svg_path, "r", encoding="utf-8", errors="replace") as handle:
+            return handle.read()
+
+
+def _element_local_name(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1].lower()
+
+
+def _parse_points_attr(points_text: str, scale: float) -> list[list[float]]:
+    numbers = [float(value) for value in re.findall(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?", points_text or "")]
+    points: list[list[float]] = []
+    for i in range(0, len(numbers) - 1, 2):
+        points.append([numbers[i] / scale, numbers[i + 1] / scale])
+    return points
+
+
+def _flatten_svg_path(d: str, scale: float) -> list[list[float]]:
+    path = parse_path(d)
+    points: list[list[float]] = []
+    for segment in path:
+        if isinstance(segment, Line):
+            samples = [segment.start, segment.end]
+        else:
             try:
-                inter = cl_a.intersection(cl_b)
+                seg_len = float(segment.length(error=1e-3))
             except Exception:
-                continue
-            if inter.is_empty:
-                continue
-            pts = []
-            if isinstance(inter, Point):
-                pts = [inter]
-            elif isinstance(inter, MultiPoint):
-                pts = list(inter.geoms)
-            elif hasattr(inter, 'geoms'):
-                pts = [g for g in inter.geoms if isinstance(g, Point)]
-            for pt in pts:
-                raw_junctions.append((float(pt.x), float(pt.y)))
-
-    junctions = _dedup_points(raw_junctions, radius=15.0)
-
-    # ── 3. Build nodes + edges from each centerline ───────────────────
-    all_nodes: dict = {}
-    all_edges: dict = {}
-    stitch_order: list = []
-    node_idx = 0
-    edge_idx = 0
-
-    for path_id, cl in centerlines.items():
-        # Find junction points on this centerline (within 2px tolerance)
-        hits = []
-        for jx, jy in junctions:
-            jpt = Point(jx, jy)
-            if cl.distance(jpt) < 3.0:
-                proj_dist = cl.project(jpt)
-                proj_pt = cl.interpolate(proj_dist)
-                hits.append((float(proj_pt.x), float(proj_pt.y), proj_dist))
-
-        # Sort hits by distance along the centerline
-        hits.sort(key=lambda h: h[2])
-
-        if not hits:
-            # No junctions on this centerline — one edge from start to end
-            coords = list(cl.coords)
-            start_pt = (float(coords[0][0]), float(coords[0][1]))
-            end_pt = (float(coords[-1][0]), float(coords[-1][1]))
-            n_start = f"n{node_idx}"; node_idx += 1
-            n_end   = f"n{node_idx}"; node_idx += 1
-            all_nodes[n_start] = Node(id=n_start, type="endpoint", position=start_pt)
-            all_nodes[n_end]   = Node(id=n_end,   type="endpoint", position=end_pt)
-            eid = f"e{edge_idx}"; edge_idx += 1
-            all_edges[eid] = Edge(id=eid, priority=0,
-                                  start_node_id=n_start, end_node_id=n_end)
-            stitch_order.append(eid)
-            continue
-
-        # Build nodes at junction points + endpoints
-        coords = list(cl.coords)
-        start_pt = (float(coords[0][0]), float(coords[0][1]))
-        end_pt = (float(coords[-1][0]), float(coords[-1][1]))
-
-        seg_nodes = []
-        # Start node
-        nid = f"n{node_idx}"; node_idx += 1
-        all_nodes[nid] = Node(id=nid, type="endpoint", position=start_pt)
-        seg_nodes.append(nid)
-        # Junction nodes
-        for bx, by, _ in hits:
-            nid = f"n{node_idx}"; node_idx += 1
-            all_nodes[nid] = Node(id=nid, type="junction", position=(bx, by))
-            seg_nodes.append(nid)
-        # End node
-        nid = f"n{node_idx}"; node_idx += 1
-        all_nodes[nid] = Node(id=nid, type="endpoint", position=end_pt)
-        seg_nodes.append(nid)
-
-        # Edges between consecutive nodes
-        for k in range(len(seg_nodes) - 1):
-            eid = f"e{edge_idx}"; edge_idx += 1
-            all_edges[eid] = Edge(
-                id=eid, priority=0,
-                start_node_id=seg_nodes[k],
-                end_node_id=seg_nodes[k + 1],
-            )
-            stitch_order.append(eid)
-
-    # ── 4. Merge nearby junction nodes across centerlines ──────────────
-    # When two centerlines cross at nearly the same point, their
-    # junction nodes should be merged into one shared node.
-    _merge_close_junctions(all_nodes, all_edges, stitch_order, radius=15.0)
-
-    return RoadMarkedPath(
-        path_id="",
-        rungs={},
-        nodes=all_nodes,
-        edges=all_edges,
-        stitch_order=stitch_order,
-        boundary_coords=[],
-    )
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Stage 0B — Manual road-marking operations
-# ─────────────────────────────────────────────────────────────────────────────
-
-# Global counters for unique IDs (module-level to avoid collisions)
-_next_rung_id = 0
-_next_node_id = 0
-_next_edge_id = 0
-
-
-def _reset_counters():
-    """Reset global ID counters (useful for testing)."""
-    global _next_rung_id, _next_node_id, _next_edge_id
-    _next_rung_id = 0
-    _next_node_id = 0
-    _next_edge_id = 0
-
-
-def _init_counters_from_path(path: RoadMarkedPath):
-    """Initialise ID counters based on existing IDs in a path."""
-    global _next_rung_id, _next_node_id, _next_edge_id
-
-    def _extract_num(s, prefix):
-        try:
-            return int(s[len(prefix):])
-        except ValueError:
-            return -1
-
-    max_rung = max((_extract_num(k, "rung_") for k in path.rungs), default=-1)
-    max_node = max((_extract_num(k, "n") for k in path.nodes), default=-1)
-    max_edge = max((_extract_num(k, "e") for k in path.edges), default=-1)
-
-    _next_rung_id = max_rung + 1
-    _next_node_id = max_node + 1
-    _next_edge_id = max_edge + 1
-
-
-def _get_boundary_coords(polygon: Polygon) -> list:
-    """
-    Get the boundary coords that nodes lie on.
-    Same logic as build_initial_graph: for ring polygons, use the largest
-    interior boundary; otherwise use the exterior.
-    """
-    coords = list(polygon.exterior.coords)
-
-    if polygon.interiors:
-        largest_hole = max(polygon.interiors, key=lambda h: len(h.coords))
-        hole_coords = list(largest_hole.coords)
-        try:
-            Polygon(hole_coords)  # validate
-            coords = hole_coords
-        except Exception:
-            pass
-
-    if len(coords) > 1 and coords[0] == coords[-1]:
-        coords = coords[:-1]
-    return coords
-
-
-def _find_closest_vertex_index(coords: list, position: tuple) -> int:
-    """Find the index of the closest vertex in coords to position."""
-    best_idx = 0
-    best_dist = float("inf")
-    for i, (cx, cy) in enumerate(coords):
-        d = math.hypot(position[0] - cx, position[1] - cy)
-        if d < best_dist:
-            best_dist = d
-            best_idx = i
-    return best_idx
-
-
-def _extract_boundary_segment(coords: list, start_pos: tuple, end_pos: tuple) -> list:
-    """
-    Extract the boundary segment (list of (x,y) points) between start_pos
-    and end_pos, following the coords list in its natural order.
-    """
-    si = _find_closest_vertex_index(coords, start_pos)
-    ei = _find_closest_vertex_index(coords, end_pos)
-    n = len(coords)
-    if si <= ei:
-        return coords[si:ei + 1]
-    else:
-        return coords[si:] + coords[:ei + 1]
-
-
-def _edge_boundary_line(path: RoadMarkedPath, edge_id: str, coords: list) -> LineString | None:
-    """
-    Build a LineString representing the boundary segment of an edge.
-    Returns None if the edge or nodes are not found.
-    """
-    edge = path.edges.get(edge_id)
-    if edge is None:
-        return None
-    start_node = path.nodes.get(edge.start_node_id)
-    end_node = path.nodes.get(edge.end_node_id)
-    if start_node is None or end_node is None:
-        return None
-    seg = _extract_boundary_segment(coords, start_node.position, end_node.position)
-    if len(seg) < 2:
-        # If segment is too short, create a direct line between nodes
-        seg = [start_node.position, end_node.position]
-    return LineString(seg)
-
-
-def _find_edge_for_position(path: RoadMarkedPath, position: tuple, coords: list) -> str | None:
-    """
-    Find the edge whose boundary segment is closest to the given position.
-    Returns the edge_id, or None if no edge found.
-    """
-    best_edge_id = None
-    best_dist = float("inf")
-
-    for edge_id in path.stitch_order:
-        line = _edge_boundary_line(path, edge_id, coords)
-        if line is None:
-            continue
-        pt = Point(position[0], position[1])
-        dist = line.distance(pt)
-        if dist < best_dist:
-            best_dist = dist
-            best_edge_id = edge_id
-
-    return best_edge_id
-
-
-def _project_point_on_edge(path: RoadMarkedPath, edge_id: str, position: tuple, coords: list) -> tuple | None:
-    """
-    Project a position onto an edge's boundary segment.
-    Returns the (x, y) of the projected point, or None.
-    """
-    line = _edge_boundary_line(path, edge_id, coords)
-    if line is None:
-        return None
-    pt = Point(position[0], position[1])
-    proj_dist = line.project(pt)
-    proj_pt = line.interpolate(proj_dist)
-    return (float(proj_pt.x), float(proj_pt.y))
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Rung creation helper
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-def create_rung_at_point(polygon: Polygon, position: tuple) -> Rung | None:
-    """
-    Create a rung (crossbar) at a given position, perpendicular to the
-    local boundary tangent, spanning the polygon from one side to the other.
-
-    Returns a Rung with a unique auto-incremented ID, or None if a valid
-    crossbar cannot be computed.
-    """
-    from .geometry import _normal_crossbar_inside_geom
-
-    global _next_rung_id
-
-    coords = _get_boundary_coords(polygon)
-    if len(coords) < 3:
-        return None
-
-    # Build closed boundary line
-    boundary_line = LineString(coords + [coords[0]])
-    if boundary_line.length < 2.0:
-        return None
-
-    # Find nearest point on the boundary
-    pt = Point(position[0], position[1])
-    nearest_dist = boundary_line.project(pt)
-    nearest_pt = boundary_line.interpolate(nearest_dist)
-
-    # Compute tangent at nearest point using small offset along boundary
-    eps = max(2.0, boundary_line.length * 0.005)
-    t1 = boundary_line.interpolate(max(0.0, nearest_dist - eps))
-    t2 = boundary_line.interpolate(min(boundary_line.length, nearest_dist + eps))
-    tangent = (t2.x - t1.x, t2.y - t1.y)
-
-    # Use a generous half_len to ensure the crossbar spans the shape
-    half_len = max(polygon.bounds[2] - polygon.bounds[0],
-                   polygon.bounds[3] - polygon.bounds[1]) * 1.5
-
-    crossbar = _normal_crossbar_inside_geom(
-        polygon,
-        (float(nearest_pt.x), float(nearest_pt.y)),
-        tangent,
-        half_len,
-    )
-
-    if crossbar is None:
-        return None
-
-    rung_id = f"rung_{_next_rung_id}"
-    _next_rung_id += 1
-    return Rung(id=rung_id, p1=crossbar[0], p2=crossbar[1])
-
-
-def _project_point_onto_segment(point: tuple, seg_start: tuple, seg_end: tuple) -> tuple | None:
-    """Project a point onto the line segment between seg_start and seg_end.
-    Returns the closest point on the segment, clamped to the segment bounds."""
-    px, py = point
-    ax, ay = seg_start
-    bx, by = seg_end
-    dx, dy = bx - ax, by - ay
-    seg_len_sq = dx * dx + dy * dy
-    if seg_len_sq < 1e-12:
-        return seg_start  # degenerate segment
-    t = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / seg_len_sq))
-    return (ax + t * dx, ay + t * dy)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Operation 1: place_split_node
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-def place_split_node(path: RoadMarkedPath, position: tuple, polygon: Polygon,
-                     edge_id: str | None = None) -> RoadMarkedPath:
-    """
-    Place a user-cut node at the given position:
-
-    1. Creates a new node at position (type="user_cut").
-    2. Finds the closest edge (or uses explicit edge_id) and splits it
-       into two edges connected through the new node.
-    3. Creates a rung at the split point (perpendicular to local boundary).
-    4. Updates stitch_order.
-
-    Returns a modified copy of the path.
-    """
-    global _next_node_id, _next_edge_id
-
-    _init_counters_from_path(path)
-
-    # 1. Find which edge to split — use explicit edge_id if provided
-    if edge_id is not None and edge_id in path.edges:
-        split_edge_id = edge_id
-        # Project onto the straight line between the edge's nodes.
-        # This prevents the projection from jumping to unrelated boundaries.
-        edge = path.edges[split_edge_id]
-        sn = path.nodes.get(edge.start_node_id)
-        en = path.nodes.get(edge.end_node_id)
-        if sn and en:
-            # Project click position onto the node-to-node line
-            proj = _project_point_onto_segment(
-                position, sn.position, en.position
-            )
-            proj_pos = proj if proj else position
-        else:
-            proj_pos = position
-    else:
-        coords = _get_boundary_coords(polygon)
-        split_edge_id = _find_edge_for_position(path, position, coords)
-        if split_edge_id is None:
-            raise ValueError("Could not find an edge near the given position.")
-        proj_pos = _project_point_on_edge(path, split_edge_id, position, coords)
-        if proj_pos is None:
-            proj_pos = position  # fallback
-
-    # 3. Create the new node
-    new_node_id = f"n{_next_node_id}"
-    _next_node_id += 1
-    new_node = Node(id=new_node_id, type="user_cut", position=proj_pos)
-
-    # 4. Split the edge
-    old_edge = path.edges[split_edge_id]
-    old_start = old_edge.start_node_id
-    old_end = old_edge.end_node_id
-
-    # Two new edges: old_start -> new_node, new_node -> old_end
-    new_edge_a_id = f"e{_next_edge_id}"
-    _next_edge_id += 1
-    new_edge_a = Edge(
-        id=new_edge_a_id,
-        priority=old_edge.priority,
-        start_node_id=old_start,
-        end_node_id=new_node_id,
-        start_rung_id=old_edge.start_rung_id,
-        end_rung_id=None,
-        yield_to_edge_id=old_edge.yield_to_edge_id,
-    )
-
-    new_edge_b_id = f"e{_next_edge_id}"
-    _next_edge_id += 1
-    new_edge_b = Edge(
-        id=new_edge_b_id,
-        priority=old_edge.priority,
-        start_node_id=new_node_id,
-        end_node_id=old_end,
-        start_rung_id=None,
-        end_rung_id=old_edge.end_rung_id,
-        yield_to_edge_id=None,
-    )
-
-    # 5. Create rung at split point
-    rung = create_rung_at_point(polygon, proj_pos)
-
-    # 6. Update path
-    new_path = RoadMarkedPath(
-        path_id=path.path_id,
-        rungs=dict(path.rungs),
-        nodes=dict(path.nodes),
-        edges=dict(path.edges),
-        stitch_order=list(path.stitch_order),
-    )
-
-    new_path.nodes[new_node_id] = new_node
-    del new_path.edges[split_edge_id]
-    new_path.edges[new_edge_a_id] = new_edge_a
-    new_path.edges[new_edge_b_id] = new_edge_b
-
-    if rung:
-        new_path.rungs[rung.id] = rung
-
-    # 7. Update stitch_order: replace old edge with the two new edges
-    try:
-        idx = new_path.stitch_order.index(split_edge_id)
-        new_path.stitch_order[idx:idx + 1] = [new_edge_a_id, new_edge_b_id]
-    except ValueError:
-        new_path.stitch_order.extend([new_edge_a_id, new_edge_b_id])
-
-    return new_path
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Operation 2: place_yield_rung
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-def place_yield_rung(path: RoadMarkedPath, position: tuple,
-                     primary_edge_id: str, secondary_edge_id: str,
-                     polygon: Polygon) -> RoadMarkedPath:
-    """
-    Place a yield rung at the given position:
-
-    1. Creates a yield rung at position (perpendicular to local boundary).
-    2. Sets secondary_edge.yield_to_edge_id = primary_edge_id.
-    3. Sets secondary_edge.start_rung_id to the new rung.
-    4. The primary edge passes through unchanged.
-
-    Returns a modified copy of the path.
-    """
-    _init_counters_from_path(path)
-
-    if primary_edge_id not in path.edges:
-        raise ValueError(f"Primary edge '{primary_edge_id}' not found.")
-    if secondary_edge_id not in path.edges:
-        raise ValueError(f"Secondary edge '{secondary_edge_id}' not found.")
-
-    new_path = RoadMarkedPath(
-        path_id=path.path_id,
-        rungs=dict(path.rungs),
-        nodes=dict(path.nodes),
-        edges=dict(path.edges),
-        stitch_order=list(path.stitch_order),
-    )
-
-    # Create the yield rung
-    rung = create_rung_at_point(polygon, position)
-    if rung is None:
-        raise RuntimeError("Could not create a yield rung at the given position.")
-
-    new_path.rungs[rung.id] = rung
-
-    # Modify the secondary edge
-    sec_edge = new_path.edges[secondary_edge_id]
-    sec_edge.yield_to_edge_id = primary_edge_id
-    sec_edge.start_rung_id = rung.id
-
-    return new_path
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Operation 3: set_edge_priority
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-def set_edge_priority(path: RoadMarkedPath, edge_id: str, priority: int) -> RoadMarkedPath:
-    """
-    Update the priority of a single edge. Simple setter.
-
-    Returns a modified copy of the path.
-    """
-    if edge_id not in path.edges:
-        raise ValueError(f"Edge '{edge_id}' not found.")
-
-    if priority not in (0, 1, 2):
-        raise ValueError(f"Invalid priority {priority}. Must be 0 (primary), 1 (secondary), or 2 (tertiary).")
-
-    new_path = RoadMarkedPath(
-        path_id=path.path_id,
-        rungs=dict(path.rungs),
-        nodes=dict(path.nodes),
-        edges=dict(path.edges),
-        stitch_order=list(path.stitch_order),
-    )
-    new_path.edges[edge_id].priority = priority
-    return new_path
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Operation 4: merge_edges
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-def merge_edges(path: RoadMarkedPath, edge_a_id: str, edge_b_id: str) -> RoadMarkedPath:
-    """
-    Merge two adjacent edges that share a node into a single edge.
-
-    1. Finds the shared node between edge_a and edge_b.
-    2. Removes the shared node.
-    3. Creates a new merged edge from the free end of edge_a to the free
-       end of edge_b.
-    4. Updates stitch_order.
-
-    Returns a modified copy of the path.
-    """
-    global _next_edge_id
-
-    _init_counters_from_path(path)
-
-    if edge_a_id not in path.edges:
-        raise ValueError(f"Edge A '{edge_a_id}' not found.")
-    if edge_b_id not in path.edges:
-        raise ValueError(f"Edge B '{edge_b_id}' not found.")
-
-    edge_a = path.edges[edge_a_id]
-    edge_b = path.edges[edge_b_id]
-
-    # Find the shared node
-    shared_node_id = None
-    a_nodes = {edge_a.start_node_id, edge_a.end_node_id}
-    b_nodes = {edge_b.start_node_id, edge_b.end_node_id}
-    common = a_nodes & b_nodes
-
-    if len(common) != 1:
-        raise ValueError(
-            f"Edges '{edge_a_id}' and '{edge_b_id}' do not share exactly one node "
-            f"(shared: {common}). Edges must be adjacent."
-        )
-
-    shared_node_id = common.pop()
-
-    # Determine the free ends
-    free_a = (
-        edge_a.start_node_id
-        if edge_a.end_node_id == shared_node_id
-        else edge_a.end_node_id
-    )
-    free_b = (
-        edge_b.end_node_id
-        if edge_b.start_node_id == shared_node_id
-        else edge_b.start_node_id
-    )
-
-    # Determine the correct rungs for the merged edge.
-    # start_rung comes from the free side of edge_a,
-    # end_rung comes from the free side of edge_b.
-    if free_a == edge_a.start_node_id:
-        merged_start_rung = edge_a.start_rung_id
-    else:
-        merged_start_rung = edge_a.end_rung_id
-
-    if free_b == edge_b.end_node_id:
-        merged_end_rung = edge_b.end_rung_id
-    else:
-        merged_end_rung = edge_b.start_rung_id
-
-    # Sanity: free_a and free_b must be different
-    if free_a == free_b:
-        raise ValueError("Cannot merge edges that share both nodes (would create a loop edge).")
-
-    # The merged edge goes from the free end of edge_a to the free end of edge_b.
-    new_edge_id = f"e{_next_edge_id}"
-    _next_edge_id += 1
-
-    merged_edge = Edge(
-        id=new_edge_id,
-        priority=edge_a.priority,  # preserve priority from first edge
-        start_node_id=free_a,
-        end_node_id=free_b,
-        start_rung_id=merged_start_rung,
-        end_rung_id=merged_end_rung,
-        yield_to_edge_id=edge_a.yield_to_edge_id or edge_b.yield_to_edge_id,
-    )
-
-    # Build new path
-    new_path = RoadMarkedPath(
-        path_id=path.path_id,
-        rungs=dict(path.rungs),
-        nodes=dict(path.nodes),
-        edges=dict(path.edges),
-        stitch_order=list(path.stitch_order),
-    )
-
-    # Remove old edges and shared node
-    del new_path.edges[edge_a_id]
-    del new_path.edges[edge_b_id]
-    if shared_node_id in new_path.nodes:
-        del new_path.nodes[shared_node_id]
-
-    new_path.edges[new_edge_id] = merged_edge
-
-    # Update stitch_order: replace edge_a and edge_b with the merged edge
-    try:
-        idx_a = new_path.stitch_order.index(edge_a_id)
-        idx_b = new_path.stitch_order.index(edge_b_id)
-        # Remove them in reverse order to preserve indices
-        if idx_a < idx_b:
-            new_path.stitch_order.pop(idx_b)
-            new_path.stitch_order.pop(idx_a)
-        else:
-            new_path.stitch_order.pop(idx_a)
-            new_path.stitch_order.pop(idx_b)
-        new_path.stitch_order.insert(min(idx_a, idx_b), new_edge_id)
-    except ValueError:
-        # If edges aren't in stitch_order for some reason, append
-        new_path.stitch_order.append(new_edge_id)
-
-    return new_path
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Operation 5: reorder_stitch_order
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-def reorder_stitch_order(path: RoadMarkedPath, new_order: list) -> RoadMarkedPath:
-    """
-    Update the stitch order of edges.
-
-    1. Validates that all edge IDs in new_order exist in the path.
-    2. Validates that new_order contains exactly the same set of edge IDs
-       as the current stitch_order.
-    3. Updates stitch_order.
-
-    Returns a modified copy of the path.
-    """
-    current_set = set(path.stitch_order)
-    new_set = set(new_order)
-
-    if new_set != current_set:
-        missing = current_set - new_set
-        extra = new_set - current_set
-        msg_parts = []
-        if missing:
-            msg_parts.append(f"missing edges: {sorted(missing)}")
-        if extra:
-            msg_parts.append(f"unknown edges: {sorted(extra)}")
-        raise ValueError(f"New stitch order must contain exactly the same edges. " + "; ".join(msg_parts))
-
-    # Validate all edge IDs exist
-    for eid in new_order:
-        if eid not in path.edges:
-            raise ValueError(f"Edge '{eid}' not found in path.")
-
-    new_path = RoadMarkedPath(
-        path_id=path.path_id,
-        rungs=dict(path.rungs),
-        nodes=dict(path.nodes),
-        edges=dict(path.edges),
-        stitch_order=list(new_order),
-    )
-    return new_path
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Stage 2 — Auto-detect junctions, split edges, and place yield rungs
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-def auto_detect_junctions(path: RoadMarkedPath, polygon: Polygon,
-                          stitch_spacing: float = 20.0) -> RoadMarkedPath:
-    """
-    Stage 2: Auto-detect narrow-waist junctions, split edges at those
-    junctions, and place yield rungs so satin stitches don't bleed
-    across narrow waists.
-
-    1. Calls ``geometry.detect_junctions()`` to find junction midpoints.
-    2. For each junction:
-       a. Finds the edges closest to the junction midpoint.
-       b. Splits each edge at the projected position (creating rungs).
-       c. After all splits, places yield rungs between edges meeting
-          at the junction node.
-
-    Returns a modified copy of the path (the original is unchanged).
-    """
-    from .geometry import detect_junctions
-
-    junctions = detect_junctions(polygon, stitch_spacing)
-    if not junctions:
-        return RoadMarkedPath(
-            path_id=path.path_id,
-            rungs=dict(path.rungs),
-            nodes=dict(path.nodes),
-            edges=dict(path.edges),
-            stitch_order=list(path.stitch_order),
-            boundary_coords=list(path.boundary_coords),
-        )
-
-    current_path = RoadMarkedPath(
-        path_id=path.path_id,
-        rungs=dict(path.rungs),
-        nodes=dict(path.nodes),
-        edges=dict(path.edges),
-        stitch_order=list(path.stitch_order),
-        boundary_coords=list(path.boundary_coords),
-    )
-
-    coords = _get_boundary_coords(polygon)
-
-    # Track which junction nodes were created (for yield rung placement)
-    junction_nodes = []
-
-    for junction_pt in junctions:
-        _init_counters_from_path(current_path)
-
-        # Find edges near this junction point
-        edge_dists = []
-        for eid in current_path.stitch_order:
-            line = _edge_boundary_line(current_path, eid, coords)
-            if line is not None:
-                pt = Point(junction_pt[0], junction_pt[1])
-                edge_dists.append((eid, line.distance(pt)))
-
-        if not edge_dists:
-            continue
-
-        # Only split the closest edge — this is the edge that the waist
-        # line crosses.
-        edge_dists.sort(key=lambda x: x[1])
-        closest_edge_id = edge_dists[0][0]
-
-        # Project the junction midpoint onto the edge's boundary segment
-        proj_pos = _project_point_on_edge(
-            current_path, closest_edge_id, junction_pt, coords
-        )
-        if proj_pos is None:
-            proj_pos = junction_pt
-
-        # Split the edge at the projected point
-        try:
-            current_path = place_split_node(current_path, proj_pos, polygon)
-        except (ValueError, RuntimeError):
-            continue
-
-        # Find the newly created node (the one at the split position)
-        best_nid = None
-        best_nd = float("inf")
-        for nid, node in current_path.nodes.items():
-            if node.type == "user_cut":
-                d = math.hypot(
-                    node.position[0] - proj_pos[0],
-                    node.position[1] - proj_pos[1],
-                )
-                if d < stitch_spacing * 2 and d < best_nd:
-                    best_nd = d
-                    best_nid = nid
-
-        if best_nid is not None:
-            junction_nodes.append(best_nid)
-
-    # ── Place yield rungs at junction nodes ──────────────────────────────
-    for jnid in junction_nodes:
-        if jnid not in current_path.nodes:
-            continue
-
-        _init_counters_from_path(current_path)
-        node_pos = current_path.nodes[jnid].position
-
-        # Find all edges that meet at this junction node
-        incident_edges = []
-        for eid in current_path.stitch_order:
-            edge = current_path.edges[eid]
-            if edge.start_node_id == jnid or edge.end_node_id == jnid:
-                incident_edges.append(eid)
-
-        if len(incident_edges) < 2:
-            continue
-
-        # The first edge is primary (passes through), others yield
-        primary_edge_id = incident_edges[0]
-
-        for sec_edge_id in incident_edges[1:]:
+                seg_len = 20.0
+            steps = max(4, min(80, int(math.ceil(seg_len / max(scale, 1.0) / 2.0))))
+            samples = [segment.point(i / steps) for i in range(steps + 1)]
+        for sample in samples:
+            point = [float(sample.real) / scale, float(sample.imag) / scale]
+            if not points or math.hypot(point[0] - points[-1][0], point[1] - points[-1][1]) > 1e-9:
+                points.append(point)
+    return points
+
+
+def parse_centerline_svg_to_polylines(svg_text: str, scale: float) -> list[dict[str, Any]]:
+    """Parse AutoTrace SVG line/polyline/path elements into original-SVG-coordinate polylines."""
+    if not svg_text or not svg_text.strip():
+        return []
+    if scale <= 0:
+        raise ValueError("scale must be greater than zero")
+
+    root = ET.fromstring(svg_text)
+    polylines: list[dict[str, Any]] = []
+    counter = 1
+
+    for element in root.iter():
+        name = _element_local_name(element.tag)
+        points: list[list[float]] = []
+        if name == "polyline" or name == "polygon":
+            points = _parse_points_attr(element.attrib.get("points", ""), scale)
+            if name == "polygon" and len(points) > 2 and points[0] != points[-1]:
+                points.append(list(points[0]))
+        elif name == "line":
             try:
-                current_path = place_yield_rung(
-                    current_path, node_pos,
-                    primary_edge_id, sec_edge_id, polygon,
-                )
-            except (ValueError, RuntimeError):
-                continue
+                points = [
+                    [float(element.attrib.get("x1", "0")) / scale, float(element.attrib.get("y1", "0")) / scale],
+                    [float(element.attrib.get("x2", "0")) / scale, float(element.attrib.get("y2", "0")) / scale],
+                ]
+            except ValueError:
+                points = []
+        elif name == "path" and element.attrib.get("d"):
+            try:
+                points = _flatten_svg_path(element.attrib["d"], scale)
+            except Exception:
+                points = []
 
-    return current_path
+        polyline = _make_polyline(f"cline_{counter}", points)
+        if polyline is not None:
+            polylines.append(polyline)
+            counter += 1
+
+    return polylines
+
+
+def _douglas_peucker(points: list[list[float]], tolerance: float) -> list[list[float]]:
+    if len(points) <= 2 or tolerance <= 0:
+        return [list(p) for p in points]
+
+    start = points[0]
+    end = points[-1]
+    sx, sy = start
+    ex, ey = end
+    line_len = math.hypot(ex - sx, ey - sy)
+    max_dist = -1.0
+    index = 0
+
+    for i in range(1, len(points) - 1):
+        px, py = points[i]
+        if line_len == 0:
+            dist = math.hypot(px - sx, py - sy)
+        else:
+            dist = abs((ey - sy) * px - (ex - sx) * py + ex * sy - ey * sx) / line_len
+        if dist > max_dist:
+            max_dist = dist
+            index = i
+
+    if max_dist > tolerance:
+        left = _douglas_peucker(points[: index + 1], tolerance)
+        right = _douglas_peucker(points[index:], tolerance)
+        return left[:-1] + right
+    return [list(start), list(end)]
+
+
+def clean_centerline_polylines(
+    polylines: list[dict[str, Any]],
+    min_length_px: float = 5.0,
+    simplify_tolerance: float = 1.0,
+) -> list[dict[str, Any]]:
+    """Remove tiny centerline paths and simplify jitter while preserving endpoints."""
+    cleaned: list[dict[str, Any]] = []
+    for polyline in polylines or []:
+        points = [list(map(float, point)) for point in polyline.get("points", [])]
+        if len(points) < 2:
+            continue
+        length = float(polyline.get("length") or _polyline_length(points))
+        if length < min_length_px:
+            continue
+        simplified = _douglas_peucker(points, simplify_tolerance)
+        made = _make_polyline(str(polyline.get("id") or f"cline_{len(cleaned) + 1}"), simplified)
+        if made is not None:
+            cleaned.append(made)
+    return cleaned
+
+
+def build_centerline_graph(polylines: list[dict[str, Any]], snap_distance: float = 3.0) -> dict[str, Any]:
+    """Build a simple endpoint-snapped graph from centerline polylines."""
+    node_points: list[list[float]] = []
+    edge_specs: list[tuple[str, int, int, list[list[float]], float]] = []
+
+    def node_for(point: list[float]) -> int:
+        for idx, existing in enumerate(node_points):
+            if math.hypot(point[0] - existing[0], point[1] - existing[1]) <= snap_distance:
+                existing[0] = (existing[0] + point[0]) / 2.0
+                existing[1] = (existing[1] + point[1]) / 2.0
+                return idx
+        node_points.append([float(point[0]), float(point[1])])
+        return len(node_points) - 1
+
+    for edge_index, polyline in enumerate(polylines or [], start=1):
+        points = [list(map(float, point)) for point in polyline.get("points", [])]
+        if len(points) < 2:
+            continue
+        source_idx = node_for(points[0])
+        target_idx = node_for(points[-1])
+        edge_specs.append((f"edge_{edge_index}", source_idx, target_idx, points, _polyline_length(points)))
+
+    degrees = [0 for _ in node_points]
+    for _, source_idx, target_idx, _, _ in edge_specs:
+        degrees[source_idx] += 1
+        degrees[target_idx] += 1
+
+    nodes: list[dict[str, Any]] = []
+    for idx, point in enumerate(node_points):
+        degree = degrees[idx]
+        node_type = "junction" if degree >= 3 else ("endpoint" if degree == 1 else "pass_through")
+        nodes.append({
+            "id": f"node_{idx + 1}",
+            "x": point[0],
+            "y": point[1],
+            "type": node_type,
+            "degree": degree,
+        })
+
+    edges: list[dict[str, Any]] = []
+    for edge_id, source_idx, target_idx, points, length in edge_specs:
+        edges.append({
+            "id": edge_id,
+            "source": f"node_{source_idx + 1}",
+            "target": f"node_{target_idx + 1}",
+            "points": points,
+            "length": length,
+            "source_object_ids": [],
+            "priority": None,
+            "assignment": "unmarked",
+        })
+
+    return {"nodes": nodes, "edges": edges}
+
+
+def build_road_graph_overlay_svg(
+    svg_w: float,
+    svg_h: float,
+    satin_objects: list[dict[str, Any]],
+    graph: dict[str, Any],
+) -> str:
+    """Build a debug SVG showing faint Satin paths, centerline edges, and graph nodes."""
+    width = _format_number(svg_w)
+    height = _format_number(svg_h)
+    elements: list[str] = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">',
+        f'  <rect x="0" y="0" width="{width}" height="{height}" fill="#10131c"/>',
+    ]
+
+    for obj in satin_objects or []:
+        d = obj.get("d")
+        if not d:
+            continue
+        tx = float(obj.get("tx") or 0.0)
+        ty = float(obj.get("ty") or 0.0)
+        transform = f' transform="translate({_format_number(tx)} {_format_number(ty)})"' if (tx or ty) else ""
+        obj_id = escape(str(obj.get("id", "")))
+        elements.append(
+            f'  <path data-satin-id="{obj_id}" d="{escape(str(d))}" fill="#000000" fill-opacity="0.15" stroke="#ffffff" stroke-opacity="0.18" stroke-width="0.5"{transform}/>'
+        )
+
+    for edge in graph.get("edges", []) or []:
+        points = edge.get("points") or []
+        if len(points) < 2:
+            continue
+        point_text = " ".join(f"{_format_number(p[0])},{_format_number(p[1])}" for p in points)
+        edge_id = escape(str(edge.get("id", "")))
+        elements.append(
+            f'  <polyline data-edge-id="{edge_id}" points="{point_text}" fill="none" stroke="#00d5ff" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>'
+        )
+
+    for node in graph.get("nodes", []) or []:
+        node_id = escape(str(node.get("id", "")))
+        node_type = str(node.get("type", ""))
+        fill = "#ff7a00" if node_type == "junction" else ("#30e37a" if node_type == "endpoint" else "#d9d55a")
+        radius = "3.2" if node_type == "junction" else "2.2"
+        elements.append(
+            f'  <circle data-node-id="{node_id}" cx="{_format_number(node.get("x"))}" cy="{_format_number(node.get("y"))}" r="{radius}" fill="{fill}" stroke="#ffffff" stroke-width="0.8"/>'
+        )
+
+    elements.append("</svg>")
+    return "\n".join(elements)

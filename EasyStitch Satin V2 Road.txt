@@ -1,0 +1,733 @@
+EasyStitch Satin V2 Road-Graph Centerline Implementation Checklist
+0. Scope and non-goals
+Goal
+
+Implement a Satin V2 road-graph preparation pipeline that uses:
+
+Pane 3 final Satin-only paths
+→ high-resolution black/white raster mask
+→ AutoTrace centerline
+→ parsed road graph overlay/debug output
+
+This is not yet the final Satin V2 stitch generator. The first goal is to produce a clean, useful road graph from the paths that the user has already assigned as Satin.
+
+Non-goals for this phase
+
+Do not rewrite legacy satin stitching.
+
+Do not change DST/JEF/VP3 export.
+
+Do not change Fill stitching.
+
+Do not run AutoTrace on the original uploaded image.
+
+Do not run AutoTrace on all black paths.
+
+Do not run medial-axis skeletonization on the full filled polygon.
+
+Do not stitch the AutoTrace centerline directly.
+
+Do not invent auto-priority or auto-junction logic yet.
+
+Do not remove the existing manual split / Fill / Satin / Skip workflow.
+
+1. Required pipeline ordering
+
+The order must be:
+
+Pane 1: image prep
+Pane 2: trace
+Pane 3 Part A: path assignment and manual splitting
+Pane 3 Part B: Satin-only raster mask generation
+Pane 3 Part C: AutoTrace centerline
+Pane 3 Part D: parsed road graph debug overlay
+Pane 4: unchanged for now
+
+The centreline/road-graph process must use the current Pane 3 state after user edits, including:
+
+manual splits
+new child paths
+Fill / Satin / Skip assignments
+hidden/skipped paths
+current transformed path geometry
+
+Only paths that are currently assigned:
+
+Satin
+
+are included in the raster mask.
+
+Everything assigned:
+
+Fill
+Skip
+Background
+Unset
+
+must be excluded.
+
+2. File additions
+
+Create these new files:
+
+refactor/easystitch_core/road_marker.py
+refactor/web/static/js/road_marker.js
+refactor/tests/test_road_marker.py
+
+Optional debug/prototype script:
+
+refactor/tools/test_satin_mask_centerline.py
+
+Update these existing files only as needed:
+
+refactor/app.py
+refactor/web/templates/index.html
+refactor/web/static/js/app.js
+refactor/easystitch_core/__init__.py
+
+Do not modify these files during this phase:
+
+refactor/easystitch_core/satin.py
+refactor/easystitch_core/fill.py
+refactor/easystitch_core/stitch_plan.py
+refactor/easystitch_core/export_dst.py
+refactor/easystitch_core/export_pyembroidery.py
+
+Exception: stitch_plan.py may be modified only in a later phase when Satin V2 stitching is actually integrated. Not now.
+
+3. Data structures
+3.1 Road mask request
+
+Create or support a request shape like:
+
+{
+  "svg_w": 800,
+  "svg_h": 800,
+  "objects": [
+    {
+      "id": "path_1",
+      "d": "M ... Z",
+      "color": "#000000",
+      "tx": 0,
+      "ty": 0
+    }
+  ],
+  "assignments": {
+    "path_1": "satin",
+    "path_2": "fill",
+    "path_3": "skip"
+  },
+  "settings": {
+    "mask_scale": 4,
+    "threshold": 128,
+    "median_filter": true,
+    "autotrace_despeckle_level": 8,
+    "autotrace_filter_iterations": 4,
+    "autotrace_error_threshold": 2.0
+  }
+}
+
+The backend must internally filter to:
+
+assignment == "satin"
+
+Case-insensitive is preferable:
+
+"satin", "Satin", "SATIN"
+3.2 Road mask result
+
+Return a result like:
+
+{
+  "ok": true,
+  "mask": {
+    "width_px": 3200,
+    "height_px": 3200,
+    "scale": 4,
+    "svg_w": 800,
+    "svg_h": 800,
+    "satin_object_ids": ["path_1", "path_4"],
+    "excluded_object_ids": ["path_2", "path_3"]
+  },
+  "debug": {
+    "mask_png_base64": "...",
+    "autotrace_svg": "<svg>...</svg>",
+    "overlay_svg": "<svg>...</svg>"
+  }
+}
+3.3 Road graph result
+
+Initial graph output should be simple:
+
+{
+  "ok": true,
+  "graph": {
+    "nodes": [
+      {
+        "id": "node_1",
+        "x": 123.4,
+        "y": 456.7,
+        "type": "endpoint",
+        "degree": 1
+      },
+      {
+        "id": "node_2",
+        "x": 200.1,
+        "y": 350.2,
+        "type": "junction",
+        "degree": 3
+      }
+    ],
+    "edges": [
+      {
+        "id": "edge_1",
+        "source": "node_1",
+        "target": "node_2",
+        "points": [[123.4, 456.7], [130.0, 450.0], [200.1, 350.2]],
+        "length": 142.8,
+        "source_object_ids": ["path_1"],
+        "priority": null,
+        "assignment": "unmarked"
+      }
+    ]
+  },
+  "debug": {
+    "overlay_svg": "<svg>...</svg>"
+  }
+}
+
+Do not implement priority assignment yet. Leave:
+
+"priority": null
+
+or:
+
+"assignment": "unmarked"
+4. Backend implementation details
+4.1 New module: road_marker.py
+
+Add these functions first.
+
+Function 1: collect satin objects
+def collect_satin_objects(objects: list, assignments: dict) -> list:
+    """
+    Return only objects currently assigned as Satin.
+    Must use the current Pane 3 object list after manual splits.
+    """
+
+Rules:
+
+Include only assignment == satin
+Exclude fill
+Exclude skip
+Exclude unset
+Preserve object id, d path, color, tx, ty
+Function 2: render satin mask
+def render_satin_mask(
+    objects: list,
+    assignments: dict,
+    svg_w: float,
+    svg_h: float,
+    scale: int = 4,
+    antialias: bool = False
+) -> dict:
+    """
+    Render only Satin-assigned SVG paths to a binary black/white PNG mask.
+    """
+
+Output dict:
+
+{
+    "image": PIL.Image,
+    "width_px": int,
+    "height_px": int,
+    "scale": float,
+    "satin_object_ids": list[str],
+    "excluded_object_ids": list[str],
+}
+
+Rules:
+
+White background
+Black filled satin paths
+No grey antialiasing if possible
+Use current object tx/ty transforms
+Use SVG viewBox dimensions
+Output must map back to SVG coordinates by dividing by scale
+
+Implementation options:
+
+Preferred simple route:
+
+Use cairosvg if available
+
+Alternative route:
+
+Use svgpathtools / shapely polygon rasterization if already available
+
+Do not spend too long inventing a renderer. If path rasterization is difficult, create a temporary SVG containing only satin paths and render that SVG to PNG using a known renderer.
+
+Function 3: clean binary mask
+def clean_binary_mask(image, median_filter=True, threshold=128):
+    """
+    Convert mask to pure 1-bit or L-mode black/white.
+    Optional 3x3 median filter.
+    """
+
+Rules:
+
+black = satin
+white = background
+no grey pixels in final mask
+Function 4: run AutoTrace
+def run_autotrace_centerline(
+    mask_image,
+    autotrace_path: str = "autotrace",
+    despeckle_level: int = 8,
+    filter_iterations: int = 4,
+    error_threshold: float = 2.0
+) -> str:
+    """
+    Save mask to temp PNG, run AutoTrace --centerline, return SVG text.
+    """
+
+Suggested command:
+
+autotrace \
+  --centerline \
+  --background-color FFFFFF \
+  --output-format svg \
+  --despeckle-level 8 \
+  --filter-iterations 4 \
+  --error-threshold 2.0 \
+  --output-file temp_centerline.svg \
+  temp_mask.png
+
+If any option fails because this AutoTrace build does not support it, fall back to a minimal command:
+
+autotrace \
+  --centerline \
+  --background-color FFFFFF \
+  --output-format svg \
+  --output-file temp_centerline.svg \
+  temp_mask.png
+
+The function must return a clear error if AutoTrace is missing:
+
+AutoTrace not found. Install autotrace and ensure it is on PATH.
+Function 5: parse AutoTrace SVG paths
+def parse_centerline_svg_to_polylines(svg_text: str, scale: float) -> list:
+    """
+    Parse SVG path/polygon/polyline/line elements into polylines in original SVG coordinates.
+    Divide raster coordinates by scale.
+    """
+
+Initial acceptable support:
+
+path d=""
+polyline points=""
+line x1/y1/x2/y2
+
+If paths contain curves, flatten them to polylines using existing SVG path tooling if available.
+
+Output:
+
+[
+    {
+        "id": "cline_1",
+        "points": [[x, y], [x, y], ...],
+        "length": 123.4
+    }
+]
+Function 6: clean polylines
+def clean_centerline_polylines(
+    polylines: list,
+    min_length_px: float = 5.0,
+    simplify_tolerance: float = 1.0
+) -> list:
+    """
+    Remove tiny paths and simplify jitter.
+    """
+
+Rules:
+
+Remove lines shorter than min_length_px
+Simplify with Douglas-Peucker if available
+Do not remove endpoints
+Do not remove obvious junction paths yet
+Function 7: build simple graph
+def build_centerline_graph(
+    polylines: list,
+    snap_distance: float = 3.0
+) -> dict:
+    """
+    Snap nearby endpoints, split/represent paths as graph edges.
+    Initial version can be endpoint-based only.
+    """
+
+Initial graph rules:
+
+Endpoints within snap_distance become same node
+Node degree = number of connected edges
+degree 1 = endpoint
+degree 2 = pass-through
+degree >= 3 = junction
+
+Do not implement auto priority yet.
+
+Function 8: build debug overlay SVG
+def build_road_graph_overlay_svg(
+    svg_w: float,
+    svg_h: float,
+    satin_objects: list,
+    graph: dict
+) -> str:
+    """
+    Display original satin shapes faintly, centreline edges, and graph nodes.
+    """
+
+Overlay colors:
+
+satin path fill: black, opacity 0.15
+centreline edge: cyan or yellow
+endpoint node: small green circle
+junction node: red/orange circle
+5. New API endpoints
+
+Add to refactor/app.py.
+
+5.1 /api/roads/centerline
+
+Method:
+
+POST
+
+Input:
+
+{
+  "svg_w": 800,
+  "svg_h": 800,
+  "objects": [...],
+  "assignments": {...},
+  "settings": {...}
+}
+
+Backend steps:
+
+collect_satin_objects
+render_satin_mask
+clean_binary_mask
+run_autotrace_centerline
+parse_centerline_svg_to_polylines
+clean_centerline_polylines
+build_centerline_graph
+build_road_graph_overlay_svg
+return debug output
+
+Return:
+
+{
+  "ok": true,
+  "graph": {...},
+  "debug": {
+    "mask_png_base64": "...",
+    "autotrace_svg": "...",
+    "overlay_svg": "..."
+  }
+}
+
+On failure:
+
+{
+  "ok": false,
+  "error": "clear error message",
+  "trace": "python traceback"
+}
+5.2 /api/roads/mask_only
+
+Optional but useful for debugging.
+
+Runs only:
+
+collect_satin_objects
+render_satin_mask
+clean_binary_mask
+
+Returns:
+
+{
+  "ok": true,
+  "debug": {
+    "mask_png_base64": "..."
+  },
+  "mask": {...}
+}
+
+This is useful before AutoTrace is reliable.
+
+6. Frontend implementation
+6.1 Add new file
+
+Create:
+
+refactor/web/static/js/road_marker.js
+
+Initial functions:
+
+async function buildSatinCenterlineRoadGraph()
+async function buildSatinMaskOnly()
+function renderRoadGraphOverlay(svgText)
+function collectPane3RoadGraphPayload()
+6.2 Include the script
+
+Update template:
+
+<script src="/static/js/road_marker.js"></script>
+
+Place after state.js and before or after app.js depending on dependencies. If functions need global state from app.js, place after app.js, or expose required state cleanly.
+
+6.3 Pane 3 UI additions
+
+Add a small Road Graph panel in Pane 3:
+
+Buttons:
+
+Build Satin Mask
+Build Centerline Graph
+Clear Road Overlay
+
+Debug display:
+
+Satin objects included: N
+Excluded objects: N
+Centerline paths: N
+Graph nodes: N
+Graph edges: N
+Junction nodes: N
+
+Overlay area:
+
+Show returned overlay_svg on the existing Pane 3 viewport
+
+Do not yet add promote/demote/yield tools. That is next phase.
+
+6.4 Payload rules
+
+collectPane3RoadGraphPayload() must send the current Pane 3 state:
+
+current structureObjects after manual splits
+current stitchAssignments
+svg width/height
+current transforms tx/ty
+
+It must not send original pre-split paths if they are no longer current.
+
+It must not include Fill/Skip objects except through assignments, because backend will filter them anyway.
+
+7. Required manual workflow for testing
+
+Use this workflow exactly:
+
+1. Load puppy image.
+2. Pane 1: prepare image.
+3. Pane 2: trace.
+4. Pane 3: load current trace.
+5. Assign relevant outline paths as Satin.
+6. Use Manual Split to separate non-satin irregular shapes if needed.
+   Example:
+   - split off rounded puppy nose portion
+   - assign rounded nose portion Fill
+   - leave narrow outline/mouth pieces as Satin
+7. Click Build Satin Mask.
+8. Confirm mask includes only Satin paths.
+9. Click Build Centerline Graph.
+10. Confirm centreline overlay follows the satin paths only.
+
+Expected:
+
+No eyes if eyes are Fill
+No tongue/nose rounded blob if reassigned Fill
+No background
+No full original image
+Only current Satin-assigned paths
+8. Debug output files
+
+Backend should optionally write debug files when a setting is enabled:
+
+debug/road_mask.png
+debug/road_autotrace.svg
+debug/road_overlay.svg
+debug/road_graph.json
+
+If writing files is too intrusive, return all debug data through the API first.
+
+The overlay SVG is the most important artefact.
+
+9. Acceptance criteria for this phase
+
+This phase is successful when:
+
+1. Manual splits in Pane 3 are reflected in the Satin-only mask.
+2. Paths reassigned Fill/Skip are excluded from the mask.
+3. AutoTrace runs on the mask, not the original image.
+4. The returned centreline overlay visually follows the selected Satin paths.
+5. The overlay has recognizable puppy outline/ear/head road graph.
+6. The result is better than the previous medial-axis starburst.
+7. Legacy stitch generation still works unchanged.
+8. DST/JEF export still works unchanged.
+
+This phase is not required to:
+
+stitch with Satin V2
+auto-detect priority
+auto-place yield rungs
+replace legacy satin
+export V2 stitches
+10. Tests
+
+Add tests to:
+
+refactor/tests/test_road_marker.py
+
+Minimum tests:
+
+Test 1: only Satin objects included
+
+Input:
+
+3 fake path objects
+assignments:
+  path_a = satin
+  path_b = fill
+  path_c = skip
+
+Expected:
+
+collect_satin_objects returns only path_a
+Test 2: split child assignments respected
+
+Input:
+
+parent path was split into child_1 and child_2
+child_1 = satin
+child_2 = fill
+
+Expected:
+
+only child_1 is included
+parent is not included if not present in current objects
+child_2 is excluded
+Test 3: mask dimensions
+
+Input:
+
+svg_w = 500
+svg_h = 400
+scale = 4
+
+Expected:
+
+mask width = 2000
+mask height = 1600
+scale = 4
+Test 4: graph node classification
+
+Input:
+
+three polylines meeting at one endpoint
+
+Expected:
+
+shared node degree >= 3
+node type = junction
+Test 5: missing AutoTrace gives clear error
+
+Temporarily call with invalid autotrace path:
+
+autotrace_path = /missing/autotrace
+
+Expected:
+
+ok false or raised error contains "AutoTrace not found"
+11. Implementation order
+
+Do the work in this order:
+
+1. road_marker.py:
+   - collect_satin_objects
+   - render_satin_mask
+   - clean_binary_mask
+
+2. API:
+   - /api/roads/mask_only
+
+3. UI:
+   - Build Satin Mask button
+   - show returned mask/debug stats
+
+4. road_marker.py:
+   - run_autotrace_centerline
+   - parse_centerline_svg_to_polylines
+   - clean_centerline_polylines
+   - build_centerline_graph
+   - build_road_graph_overlay_svg
+
+5. API:
+   - /api/roads/centerline
+
+6. UI:
+   - Build Centerline Graph button
+   - show overlay and stats
+
+7. tests:
+   - add test_road_marker.py
+
+8. manual validation:
+   - puppy after manual split
+   - HappySun smile
+   - house simple outlines
+
+Do not skip the mask_only step. It is the easiest way to confirm the correct input is being sent to AutoTrace.
+
+12. Guardrails
+
+If the centreline is bad, check in this order:
+
+1. Is the Satin-only mask correct?
+2. Are Fill/Skip paths accidentally included?
+3. Are manual split children represented correctly?
+4. Is the mask pure black/white?
+5. Is scale high enough?
+6. Are AutoTrace options too aggressive?
+7. Is graph cleanup pruning too much or too little?
+
+Do not immediately change Satin V2 or stitch generation.
+
+If the mask is wrong, fix Pane 3 object/assignment collection.
+
+If the mask is right but AutoTrace is wrong, tune AutoTrace and cleanup.
+
+If AutoTrace is right but graph is wrong, fix SVG parsing/snap/graph building.
+
+13. Final note for the agent
+
+The core idea is:
+
+The user already prepares and classifies the artwork in Pane 3.
+Use that work.
+
+Centerline generation must happen after manual split and assignment,
+on the final Satin-only geometry.
+
+Do not solve more than that in this phase.
+
+---
+
+Implementation note - 2026-05-24
+
+The existing refactor/easystitch_core/road_marker.py was from the previous rejected attempt.
+It has been backed up to refactor/easystitch_core/road_marker_previous_rejected.py.
+The replacement implementation will follow this checklist only.
+Old code will not be preserved unless it is a completely generic utility and clearly matches the checklist.
+Step 1 is limited to collect_satin_objects, render_satin_mask, and clean_binary_mask.
+AutoTrace, graph parsing, and UI changes are explicitly out of scope until Step 1 is complete and tested.

@@ -754,22 +754,10 @@ function selectStructureObject(id) {
   _maybeShowRoadGraph(id);
 }
 
-// --- Stage 0A: Road marker helper ---
+// Checklist pipeline: rejected Stage 0A road-graph auto-fetch is disabled.
+// Road graph building will be wired only after the checklist centerline API/UI steps.
 function _maybeShowRoadGraph(objectId) {
-  if (typeof RoadMarker === 'undefined') return;
-  if (!objectId) {
-    RoadMarker.clear();
-    return;
-  }
-  const obj = structureObjects.find(o => o.id === objectId);
-  if (!obj) {
-    RoadMarker.clear();
-    return;
-  }
-  const st = stitchAssignments[obj.id] || defaultStitchType(obj);
-  if (st === 'satin') {
-    RoadMarker.showRoadGraph(objectId);
-  } else {
+  if (typeof RoadMarker !== 'undefined' && !objectId && typeof RoadMarker.clear === 'function') {
     RoadMarker.clear();
   }
 }

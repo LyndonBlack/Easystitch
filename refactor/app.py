@@ -5,6 +5,7 @@ import base64
 import os
 import sys
 import webbrowser
+from io import BytesIO
 from pathlib import Path
 
 from flask import Flask, jsonify, render_template, request
@@ -17,13 +18,9 @@ from easystitch_core.geometry import manual_split_object, split_fill_object_by_j
 from easystitch_core.stitch_plan import build_stitch_preview_svg, build_stitch_plan
 from easystitch_core.export_dst import export_stitch_plan_to_dst
 from easystitch_core.road_marker import (
-    build_initial_graph,
-    place_split_node,
-    place_yield_rung,
-    set_edge_priority,
-    merge_edges,
-    reorder_stitch_order,
-    _reset_counters,
+    collect_satin_objects,
+    render_satin_mask,
+    clean_binary_mask,
 )
 from easystitch_core.export_pyembroidery import export_stitch_plan_to_jef, export_stitch_plan_to_vp3
 
@@ -315,291 +312,65 @@ def create_app(initial_input: str | None, output_dir: str) -> Flask:
             return jsonify({"ok": False, "error": str(e), "trace": traceback.format_exc()})
 
 
-    def _get_road_state(path_id: str):
-        """Get or initialise cached road state for a path_id."""
-        from easystitch_core.geometry import object_fill_geometry
-        from shapely.geometry import MultiPolygon
-
-        state = app.config["_ROAD_STATE"]
-        if path_id in state:
-            return state[path_id]
-
-        # First call: build initial graph
-        structure = app.config.get("LAST_STRUCTURE")
-        if not structure or not structure.get("objects"):
-            raise RuntimeError("No structure loaded. Load Pane 3 first.")
-
-        obj = None
-        for o in structure["objects"]:
-            if o.get("id") == path_id:
-                obj = o
-                break
-        if not obj:
-            raise RuntimeError(f"Path {path_id} not found in structure.")
-
-        geom = object_fill_geometry(obj)
-        if geom is None:
-            raise RuntimeError("Could not convert path to polygon geometry.")
-
-        if isinstance(geom, MultiPolygon):
-            if geom.is_empty:
-                raise RuntimeError("Path geometry is empty.")
-            geom = max(geom.geoms, key=lambda g: g.area)
-
-        if not hasattr(geom, 'exterior'):
-            raise RuntimeError("Path geometry is not a polygon.")
-
-        _reset_counters()
-        graph = build_initial_graph(geom)
-        graph.path_id = path_id
-        state[path_id] = graph
-        return graph
-
-    @app.route("/api/roads/build_graph", methods=["POST"])
-    def api_roads_build_graph():
+    @app.route("/api/roads/mask_only", methods=["POST"])
+    def api_roads_mask_only():
         try:
             body = request.get_json() or {}
-            path_id = body.get("path_id")  # optional — if omitted, uses ALL satin paths
+            settings = body.get("settings") or {}
 
-            from easystitch_core.geometry import object_fill_geometry
-            from shapely.geometry import MultiPolygon
+            objects = body.get("objects") or []
+            assignments = body.get("assignments") or {}
+            svg_w = body.get("svg_w")
+            svg_h = body.get("svg_h")
 
-            structure = app.config.get("LAST_STRUCTURE")
+            if svg_w is None or svg_h is None:
+                return jsonify({"ok": False, "error": "Missing svg_w or svg_h"})
+            if not isinstance(objects, list):
+                return jsonify({"ok": False, "error": "objects must be a list"})
+            if not isinstance(assignments, dict):
+                return jsonify({"ok": False, "error": "assignments must be an object"})
 
-            if path_id:
-                # Single-path mode (backward compat)
-                obj = None
-                for o in structure["objects"]:
-                    if o.get("id") == path_id:
-                        obj = o
-                        break
-                if obj is None:
-                    return jsonify({"ok": False, "error": f"Path '{path_id}' not found."})
-                geom = object_fill_geometry(obj)
-                if isinstance(geom, MultiPolygon):
-                    if geom.is_empty:
-                        return jsonify({"ok": False, "error": "Path geometry is empty."})
-                    geom = max(geom.geoms, key=lambda g: g.area)
-                polygons = {path_id: geom}
-            else:
-                # All-paths mode: collect every object that has a fill geometry.
-                # Skip the canvas-bbox polygon (bounds match image dimensions).
-                polygons = {}
-                for o in structure["objects"]:
-                    try:
-                        geom = object_fill_geometry(o)
-                        if isinstance(geom, MultiPolygon):
-                            geom = max(geom.geoms, key=lambda g: g.area)
-                        if geom.is_empty:
-                            continue
-                        # Skip canvas-bbox polygons (area > 80% of bbox area)
-                        minx, miny, maxx, maxy = geom.bounds
-                        bbox_area = (maxx - minx) * (maxy - miny)
-                        if bbox_area > 0 and geom.area / bbox_area > 0.85:
-                            continue
-                        polygons[o.get("id", "")] = geom
-                    except Exception:
-                        continue
+            scale = int(settings.get("mask_scale", 4))
+            threshold = int(settings.get("threshold", 128))
+            median_filter = bool(settings.get("median_filter", True))
 
-            _reset_counters()
-            graph = build_initial_graph(polygons)
-
-            # Cache under a single key for all-paths mode
-            cache_key = path_id or "__all__"
-            app.config["_ROAD_STATE"][cache_key] = graph
-
-            result = graph.to_dict()
-            result["path_id"] = cache_key
-            result["has_holes"] = any(bool(getattr(p, 'interiors', ())) for p in polygons.values())
-            result["path_count"] = len(polygons)
-            return jsonify(result)
-        except Exception as e:
-            import traceback
-            return jsonify({"ok": False, "error": str(e), "trace": traceback.format_exc()})
-
-    # ──────────────────────────────────────────────────────────────────────
-    # Stage 0B — Manual road-marking endpoints
-    # ──────────────────────────────────────────────────────────────────────
-
-    def _get_polygon_for_path(path_id: str):
-        """Get shapely polygon for a path_id from the cached road state."""
-        from easystitch_core.geometry import object_fill_geometry
-        from shapely.geometry import MultiPolygon
-
-        structure = app.config.get("LAST_STRUCTURE")
-        if not structure or not structure.get("objects"):
-            raise RuntimeError("No structure loaded.")
-
-        obj = None
-        for o in structure["objects"]:
-            if o.get("id") == path_id:
-                obj = o
-                break
-        if not obj:
-            raise RuntimeError(f"Path {path_id} not found.")
-
-        geom = object_fill_geometry(obj)
-        if geom is None:
-            raise RuntimeError("Could not convert path to polygon geometry.")
-        if isinstance(geom, MultiPolygon):
-            if geom.is_empty:
-                raise RuntimeError("Path geometry is empty.")
-            geom = max(geom.geoms, key=lambda g: g.area)
-        if not hasattr(geom, 'exterior'):
-            raise RuntimeError("Path geometry is not a polygon.")
-        return geom
-
-    @app.route("/api/roads/place_split", methods=["POST"])
-    def api_roads_place_split():
-        try:
-            body = request.get_json() or {}
-            path_id = body.get("path_id")
-            x = body.get("x")
-            y = body.get("y")
-            edge_id = body.get("edge_id")
-            if not path_id:
-                return jsonify({"ok": False, "error": "Missing path_id"})
-            if x is None or y is None:
-                return jsonify({"ok": False, "error": "Missing x, y coordinates"})
-
-            polygon = _get_polygon_for_path(path_id)
-            current = _get_road_state(path_id)
-
-            updated = place_split_node(current, (float(x), float(y)), polygon, edge_id=edge_id)
-            app.config["_ROAD_STATE"][path_id] = updated
-
-            result = updated.to_dict()
-            result["path_id"] = path_id
-            return jsonify(result)
-        except Exception as e:
-            import traceback
-            return jsonify({"ok": False, "error": str(e), "trace": traceback.format_exc()})
-
-    @app.route("/api/roads/place_yield", methods=["POST"])
-    def api_roads_place_yield():
-        try:
-            body = request.get_json() or {}
-            path_id = body.get("path_id")
-            x = body.get("x")
-            y = body.get("y")
-            primary_edge_id = body.get("primary_edge_id")
-            secondary_edge_id = body.get("secondary_edge_id")
-            if not path_id:
-                return jsonify({"ok": False, "error": "Missing path_id"})
-            if x is None or y is None:
-                return jsonify({"ok": False, "error": "Missing x, y coordinates"})
-            if not primary_edge_id:
-                return jsonify({"ok": False, "error": "Missing primary_edge_id"})
-            if not secondary_edge_id:
-                return jsonify({"ok": False, "error": "Missing secondary_edge_id"})
-
-            polygon = _get_polygon_for_path(path_id)
-            current = _get_road_state(path_id)
-
-            updated = place_yield_rung(
-                current, (float(x), float(y)),
-                primary_edge_id, secondary_edge_id, polygon,
+            mask_result = render_satin_mask(
+                objects,
+                assignments,
+                float(svg_w),
+                float(svg_h),
+                scale=scale,
+                antialias=False,
             )
-            app.config["_ROAD_STATE"][path_id] = updated
+            clean_image = clean_binary_mask(
+                mask_result["image"],
+                median_filter=median_filter,
+                threshold=threshold,
+            )
+            mask_result["image"] = clean_image
 
-            result = updated.to_dict()
-            result["path_id"] = path_id
-            return jsonify(result)
-        except Exception as e:
-            import traceback
-            return jsonify({"ok": False, "error": str(e), "trace": traceback.format_exc()})
+            png_buffer = BytesIO()
+            clean_image.save(png_buffer, format="PNG")
+            mask_png_base64 = base64.b64encode(png_buffer.getvalue()).decode("ascii")
 
-    @app.route("/api/roads/set_priority", methods=["POST"])
-    def api_roads_set_priority():
-        try:
-            body = request.get_json() or {}
-            path_id = body.get("path_id")
-            edge_id = body.get("edge_id")
-            priority = body.get("priority")
-            if not path_id:
-                return jsonify({"ok": False, "error": "Missing path_id"})
-            if not edge_id:
-                return jsonify({"ok": False, "error": "Missing edge_id"})
-            if priority is None:
-                return jsonify({"ok": False, "error": "Missing priority"})
-
-            current = _get_road_state(path_id)
-            updated = set_edge_priority(current, edge_id, int(priority))
-            app.config["_ROAD_STATE"][path_id] = updated
-
-            result = updated.to_dict()
-            result["path_id"] = path_id
-            return jsonify(result)
-        except Exception as e:
-            import traceback
-            return jsonify({"ok": False, "error": str(e), "trace": traceback.format_exc()})
-
-    @app.route("/api/roads/merge_edges", methods=["POST"])
-    def api_roads_merge_edges():
-        try:
-            body = request.get_json() or {}
-            path_id = body.get("path_id")
-            edge_a_id = body.get("edge_a_id")
-            edge_b_id = body.get("edge_b_id")
-            if not path_id:
-                return jsonify({"ok": False, "error": "Missing path_id"})
-            if not edge_a_id:
-                return jsonify({"ok": False, "error": "Missing edge_a_id"})
-            if not edge_b_id:
-                return jsonify({"ok": False, "error": "Missing edge_b_id"})
-
-            current = _get_road_state(path_id)
-            updated = merge_edges(current, edge_a_id, edge_b_id)
-            app.config["_ROAD_STATE"][path_id] = updated
-
-            result = updated.to_dict()
-            result["path_id"] = path_id
-            return jsonify(result)
-        except Exception as e:
-            import traceback
-            return jsonify({"ok": False, "error": str(e), "trace": traceback.format_exc()})
-
-    @app.route("/api/roads/reorder", methods=["POST"])
-    def api_roads_reorder():
-        try:
-            body = request.get_json() or {}
-            path_id = body.get("path_id")
-            stitch_order = body.get("stitch_order")
-            if not path_id:
-                return jsonify({"ok": False, "error": "Missing path_id"})
-            if not stitch_order or not isinstance(stitch_order, list):
-                return jsonify({"ok": False, "error": "Missing or invalid stitch_order (must be a list)"})
-
-            current = _get_road_state(path_id)
-            updated = reorder_stitch_order(current, stitch_order)
-            app.config["_ROAD_STATE"][path_id] = updated
-
-            result = updated.to_dict()
-            result["path_id"] = path_id
-            return jsonify(result)
-        except Exception as e:
-            import traceback
-            return jsonify({"ok": False, "error": str(e), "trace": traceback.format_exc()})
-
-    @app.route("/api/roads/auto_detect", methods=["POST"])
-    def api_roads_auto_detect():
-        try:
-            body = request.get_json() or {}
-            path_id = body.get("path_id")
-            stitch_spacing = body.get("stitch_spacing", 20.0)
-            if not path_id:
-                return jsonify({"ok": False, "error": "Missing path_id"})
-
-            polygon = _get_polygon_for_path(path_id)
-            current = _get_road_state(path_id)
-
-            from easystitch_core.road_marker import auto_detect_junctions
-            updated = auto_detect_junctions(current, polygon, float(stitch_spacing))
-            app.config["_ROAD_STATE"][path_id] = updated
-
-            result = updated.to_dict()
-            result["path_id"] = path_id
-            return jsonify(result)
+            satin_objects = collect_satin_objects(objects, assignments)
+            return jsonify({
+                "ok": True,
+                "mask": {
+                    "width_px": mask_result["width_px"],
+                    "height_px": mask_result["height_px"],
+                    "scale": mask_result["scale"],
+                    "svg_w": float(svg_w),
+                    "svg_h": float(svg_h),
+                    "satin_object_ids": mask_result["satin_object_ids"],
+                    "excluded_object_ids": mask_result["excluded_object_ids"],
+                },
+                "debug": {
+                    "mask_png_base64": mask_png_base64,
+                    "satin_object_count": len(satin_objects),
+                    "excluded_object_count": len(mask_result["excluded_object_ids"]),
+                },
+            })
         except Exception as e:
             import traceback
             return jsonify({"ok": False, "error": str(e), "trace": traceback.format_exc()})

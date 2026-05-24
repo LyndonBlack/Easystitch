@@ -266,27 +266,11 @@
         </div>
 
         <div class="card">
-          <h2>Road Graph</h2>
-
-          <!-- Road Marking Toolbar -->
-          <div id="road-toolbar" style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:8px">
-            <button class="btn road-tool-btn active" data-tool="select" id="tool-select" title="Select: click edges/nodes to select">&#9997; Select</button>
-            <button class="btn road-tool-btn" data-tool="mark-primary" id="tool-mark-primary" title="Mark Primary: click edge → priority 0">&#x1F537; Primary</button>
-            <button class="btn road-tool-btn" data-tool="mark-secondary" id="tool-mark-secondary" title="Mark Secondary: click edge → priority 1">&#x1F536; Secondary</button>
-            <button class="btn road-tool-btn" data-tool="mark-tertiary" id="tool-mark-tertiary" title="Mark Tertiary: click edge → priority 2">&#x1F538; Tertiary</button>
-            <button class="btn road-tool-btn" data-tool="yield" id="tool-yield" title="Yield: click junction → create yield rung">&#x26A1; Yield</button>
-            <button class="btn road-tool-btn" data-tool="promote" id="tool-promote" title="Promote/Demote: click edge → cycle priority">&#x1F504; Cycle</button>
-            <button class="btn road-tool-btn" data-tool="merge" id="tool-merge" title="Merge: select 2 adjacent edges → merge">&#x1F517; Merge</button>
-            <button class="btn road-tool-btn" data-tool="reorder" id="tool-reorder" title="Reorder: drag edges in stitch-order panel">&#x2195; Reorder</button>
-          </div>
-
-          <button id="road-graph-toggle-btn" class="btn" style="margin-top:8px;width:100%" onclick="RoadMarker.toggleOverlay()">Show Road Graph</button>
-
-          <!-- Stitch Order Panel -->
-          <div id="stitch-order-panel" style="display:none;margin-top:8px">
-            <div style="font-size:.78rem;color:#b8bfd6;font-weight:700;margin-bottom:4px">Stitch Order</div>
-            <div id="stitch-order-list" style="font-size:.72rem;color:#9da7c4;max-height:200px;overflow:auto;background:#0a0e1a;border:1px solid #333;border-radius:4px;padding:4px"></div>
-            <div style="margin-top:4px;font-size:.68rem;color:#8f96b3" id="stitch-order-status"></div>
+          <h2>Satin Road Mask</h2>
+          <button class="btn primary" id="road-mask-build-btn" onclick="RoadMarker.buildSatinMaskOnly()">Build Satin Mask</button>
+          <div class="meta" id="road-mask-stats" style="margin-top:8px">No Satin mask built yet.</div>
+          <div id="road-mask-preview" class="preview-img-wrap" style="margin-top:8px;min-height:120px;max-height:260px;overflow:auto;background:#fff;border:1px solid #334;border-radius:6px;display:flex;align-items:center;justify-content:center;color:#555">
+            Mask preview will appear here.
           </div>
         </div>
 
@@ -580,27 +564,6 @@
 <script src="/static/js/tooltips.js"></script>
 <script src="/static/js/app.js"></script>
 <script src="/static/js/road_marker.js"></script>
-
-<!-- Road Graph Modal Overlay -->
-<div id="road-graph-modal" style="display:none;position:fixed;top:0;left:0;width:100vw;height:100vh;background:rgba(0,0,0,0.92);z-index:9999;flex-direction:column;align-items:center;justify-content:flex-start;padding:16px">
-  <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;flex-shrink:0">
-    <div id="road-modal-toolbar" style="display:flex;flex-wrap:wrap;gap:4px">
-      <button class="btn road-tool-btn active" data-tool="select" onclick="RoadMarker.setTool('select')">&#9997; Select</button>
-      <button class="btn road-tool-btn" data-tool="mark-primary" onclick="RoadMarker.setTool('mark-primary')">&#x1F537; Primary</button>
-      <button class="btn road-tool-btn" data-tool="mark-secondary" onclick="RoadMarker.setTool('mark-secondary')">&#x1F536; Secondary</button>
-      <button class="btn road-tool-btn" data-tool="mark-tertiary" onclick="RoadMarker.setTool('mark-tertiary')">&#x1F538; Tertiary</button>
-      <button class="btn road-tool-btn" data-tool="split" onclick="RoadMarker.setTool('split')">&#x2702; Split</button>
-      <button class="btn road-tool-btn" data-tool="yield" onclick="RoadMarker.setTool('yield')">&#x26A1; Yield</button>
-      <button class="btn road-tool-btn" data-tool="promote" onclick="RoadMarker.setTool('promote')">&#x1F504; Cycle</button>
-      <button class="btn road-tool-btn" data-tool="merge" onclick="RoadMarker.setTool('merge')">&#x1F517; Merge</button>
-      <button class="btn road-tool-btn" data-tool="reorder" onclick="RoadMarker.setTool('reorder')">&#x2195; Reorder</button>
-      <button class="btn road-tool-btn" data-tool="auto-detect" onclick="RoadMarker.autoDetect()" style="background:#2a3a5c;border-color:#4488ff">&#x1F50D; Auto-Detect</button>
-    </div>
-    <button onclick="RoadMarker.toggleOverlay()" style="background:#c44;color:#fff;border:none;border-radius:4px;padding:8px 16px;font-size:14px;cursor:pointer;margin-left:auto">✕ Close</button>
-  </div>
-  <svg id="road-graph-modal-svg" style="flex:1;width:100%;min-height:0;background:#0a0e1a;border:1px solid #334;border-radius:4px"></svg>
-  <div id="road-graph-modal-status" style="color:#888;margin-top:8px;font-size:.8rem;flex-shrink:0"></div>
-</div>
 
 </body>
 </html>
