@@ -826,3 +826,90 @@ Fix parse_centerline_svg_to_polylines before wiring /api/roads/centerline so SVG
 
 ### Next step
 Proceed to checklist Step 5 only: /api/roads/centerline, using the corrected multi-subpath parser.
+
+---
+
+## 2026-05-24 11:18:37 IST - Pre-Step 5 closed-loop cleanup correction
+
+### Current objective
+Patch clean_centerline_polylines so closed-loop AutoTrace subpaths are preserved before Step 5 endpoint wiring.
+
+### Files changed
+- path: /home/lyndon/AI/Easystitch/refactor/easystitch_core/road_marker.py
+- function/section changed: clean_centerline_polylines and new closed-loop helper functions
+- reason for change: open-line Douglas-Peucker collapsed small closed cheek loops with identical first/end points, causing one cheek circle to disappear
+- whether code was added, removed, or modified: modified cleanup logic and added helpers
+
+- path: /home/lyndon/AI/Easystitch/refactor/tests/test_road_marker.py
+- function/section changed: added real AutoTrace fixture regression for closed cheek loops
+- reason for change: ensure raw_polylines=6 and clean_polylines=6 for test_png_direct_autotrace_centerline_raw.svg, with both cheek-loop bboxes present
+- whether code was added, removed, or modified: added test
+
+- path: /home/lyndon/AI/Easystitch/test_assets/autotrace_review/test_autotrace_centerline_raw.svg
+- function/section changed: regenerated review artifact
+- reason for change: provide current raw AutoTrace output after cleanup correction
+- whether code was added, removed, or modified: regenerated artifact
+
+- path: /home/lyndon/AI/Easystitch/test_assets/autotrace_review/test_centerline_overlay.svg
+- function/section changed: regenerated overlay artifact
+- reason for change: verify overlay preserves closed-loop cheek paths
+- whether code was added, removed, or modified: regenerated artifact
+
+- path: /home/lyndon/AI/Easystitch/test_assets/autotrace_review/test_png_direct_autotrace_centerline_raw.svg
+- function/section changed: regenerated direct-raster raw AutoTrace fixture
+- reason for change: keep fixture aligned with current generation path
+- whether code was added, removed, or modified: regenerated artifact
+
+- path: /home/lyndon/AI/Easystitch/test_assets/autotrace_review/test_png_direct_centerline_overlay.svg
+- function/section changed: regenerated direct-raster overlay artifact
+- reason for change: verify both cheek loops appear in cleaned overlay
+- whether code was added, removed, or modified: regenerated artifact
+
+### Commands run
+- command: pytest tests/test_road_marker.py::test_clean_real_autotrace_fixture_preserves_both_closed_cheek_loops -q
+- success/failure: expected failure before implementation
+- important output/error: raw count was 6 but cleaned count was 5
+
+- command: pytest tests/test_road_marker.py::test_clean_real_autotrace_fixture_preserves_both_closed_cheek_loops -q && python3 -m py_compile easystitch_core/road_marker.py && pytest tests -q
+- success/failure: success after implementation
+- important output/error: focused test passed; full active suite 11 passed
+
+- command: python3 inline review artifact regeneration script
+- success/failure: success
+- important output/error: direct raw_polylines=6 clean_polylines=6 nodes=10 edges=6; closed cheek bboxes preserved at approximately (133.8,214.0,171.1,234.4) and (351.0,214.1,388.4,234.3)
+
+### Tests performed
+- what was tested: closed-loop cleanup on real direct AutoTrace fixture
+- input file used: /home/lyndon/AI/Easystitch/test_assets/autotrace_review/test_png_direct_autotrace_centerline_raw.svg
+- expected result: parser returns 6 polylines and cleaner keeps 6; both cheek-loop bounding boxes exist
+- actual result: pass
+- pass/fail: pass
+
+- what was tested: full active tests
+- input file used: refactor/tests
+- expected result: all active tests pass
+- actual result: 11 passed
+- pass/fail: pass
+
+### Debug outputs created
+- AutoTrace SVG: /home/lyndon/AI/Easystitch/test_assets/autotrace_review/test_autotrace_centerline_raw.svg
+- overlay SVG: /home/lyndon/AI/Easystitch/test_assets/autotrace_review/test_centerline_overlay.svg
+- AutoTrace SVG: /home/lyndon/AI/Easystitch/test_assets/autotrace_review/test_png_direct_autotrace_centerline_raw.svg
+- overlay SVG: /home/lyndon/AI/Easystitch/test_assets/autotrace_review/test_png_direct_centerline_overlay.svg
+- graph JSON: /home/lyndon/AI/Easystitch/test_assets/autotrace_review/test_centerline_graph.json
+- graph JSON: /home/lyndon/AI/Easystitch/test_assets/autotrace_review/test_png_direct_centerline_graph.json
+
+### Decisions made
+- Closed polylines are detected when first and last points are within 1.5 px.
+- Closed-loop length is computed as perimeter.
+- Closed loops are not passed through open-line Douglas-Peucker.
+- Small closed loops are preserved without simplification when perimeter >= min_length_px and at least 4 meaningful points exist.
+- Closed loops are explicitly re-closed after cleanup.
+- Closed loops are dropped only when perimeter is below min_length_px or fewer than 4 meaningful points remain.
+
+### Issues / blockers
+- None for this correction.
+- refactor/easystitch_core/geometry.py remains dirty from earlier rejected medial-axis work and was not touched.
+
+### Next step
+Proceed to checklist Step 5 only: /api/roads/centerline, using the corrected multi-subpath parser and closed-loop-safe cleaner.

@@ -115,6 +115,36 @@ def test_parse_real_autotrace_svg_does_not_connect_separate_subpaths():
     assert len(graph["edges"]) == len(polylines)
 
 
+def test_clean_real_autotrace_fixture_preserves_both_closed_cheek_loops():
+    fixture = os.path.abspath(os.path.join(
+        os.path.dirname(__file__),
+        "..",
+        "..",
+        "test_assets",
+        "autotrace_review",
+        "test_png_direct_autotrace_centerline_raw.svg",
+    ))
+    if not os.path.exists(fixture):
+        pytest.skip("AutoTrace review fixture has not been generated yet")
+
+    svg_text = open(fixture, "r", encoding="utf-8").read()
+    raw = parse_centerline_svg_to_polylines(svg_text, scale=1)
+    cleaned = clean_centerline_polylines(raw, min_length_px=5.0, simplify_tolerance=1.0)
+
+    assert len(raw) == 6
+    assert len(cleaned) == 6
+
+    boxes = []
+    for polyline in cleaned:
+        points = polyline["points"]
+        xs = [point[0] for point in points]
+        ys = [point[1] for point in points]
+        boxes.append((min(xs), min(ys), max(xs), max(ys)))
+
+    assert any(130 <= x1 <= 140 and 210 <= y1 <= 220 and 165 <= x2 <= 175 and 230 <= y2 <= 240 for x1, y1, x2, y2 in boxes)
+    assert any(345 <= x1 <= 355 and 210 <= y1 <= 220 and 385 <= x2 <= 395 and 230 <= y2 <= 240 for x1, y1, x2, y2 in boxes)
+
+
 def test_clean_centerline_polylines_removes_tiny_paths_and_preserves_endpoints():
     polylines = [
         {"id": "short", "points": [[0, 0], [1, 0]], "length": 1.0},

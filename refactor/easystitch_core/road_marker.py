@@ -391,22 +391,71 @@ def _douglas_peucker(points: list[list[float]], tolerance: float) -> list[list[f
     return [list(start), list(end)]
 
 
+def _point_distance(a: list[float], b: list[float]) -> float:
+    return math.hypot(float(b[0]) - float(a[0]), float(b[1]) - float(a[1]))
+
+
+def _dedupe_consecutive_points(points: list[list[float]]) -> list[list[float]]:
+    deduped: list[list[float]] = []
+    for point in points:
+        p = _normalise_point(point)
+        if not deduped or _point_distance(p, deduped[-1]) > 1e-9:
+            deduped.append(p)
+    return deduped
+
+
+def _is_closed_polyline(points: list[list[float]], tolerance: float = 1.5) -> bool:
+    return len(points) >= 4 and _point_distance(points[0], points[-1]) <= tolerance
+
+
+def _closed_polyline_perimeter(points: list[list[float]]) -> float:
+    if len(points) < 2:
+        return 0.0
+    total = _polyline_length(points)
+    if _point_distance(points[0], points[-1]) > 1e-9:
+        total += _point_distance(points[-1], points[0])
+    return total
+
+
+def _make_closed_polyline(polyline_id: str, points: list[list[float]]) -> dict[str, Any] | None:
+    deduped = _dedupe_consecutive_points(points)
+    if len(deduped) >= 2 and _point_distance(deduped[0], deduped[-1]) <= 1.5:
+        deduped = deduped[:-1]
+    if len(deduped) < 4:
+        return None
+    deduped.append(list(deduped[0]))
+    return {"id": polyline_id, "points": deduped, "length": _closed_polyline_perimeter(deduped)}
+
+
 def clean_centerline_polylines(
     polylines: list[dict[str, Any]],
     min_length_px: float = 5.0,
     simplify_tolerance: float = 1.0,
 ) -> list[dict[str, Any]]:
-    """Remove tiny centerline paths and simplify jitter while preserving endpoints."""
+    """Remove tiny centerline paths and simplify jitter while preserving closed loops."""
     cleaned: list[dict[str, Any]] = []
     for polyline in polylines or []:
-        points = [list(map(float, point)) for point in polyline.get("points", [])]
+        points = _dedupe_consecutive_points([list(map(float, point)) for point in polyline.get("points", [])])
         if len(points) < 2:
             continue
-        length = float(polyline.get("length") or _polyline_length(points))
-        if length < min_length_px:
-            continue
-        simplified = _douglas_peucker(points, simplify_tolerance)
-        made = _make_polyline(str(polyline.get("id") or f"cline_{len(cleaned) + 1}"), simplified)
+
+        polyline_id = str(polyline.get("id") or f"cline_{len(cleaned) + 1}")
+        if _is_closed_polyline(points):
+            length = _closed_polyline_perimeter(points)
+            meaningful_points = points[:-1] if _point_distance(points[0], points[-1]) <= 1.5 else points
+            if length < min_length_px or len(meaningful_points) < 4:
+                continue
+            # Closed loops are common for small cheeks/eyes. Do not run the
+            # open-line Douglas-Peucker simplifier on them: identical endpoints
+            # collapse the loop to a degenerate two-point path.
+            made = _make_closed_polyline(polyline_id, points)
+        else:
+            length = float(polyline.get("length") or _polyline_length(points))
+            if length < min_length_px:
+                continue
+            simplified = _douglas_peucker(points, simplify_tolerance)
+            made = _make_polyline(polyline_id, simplified)
+
         if made is not None:
             cleaned.append(made)
     return cleaned
