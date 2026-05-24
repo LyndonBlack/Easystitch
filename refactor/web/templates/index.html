@@ -286,6 +286,24 @@
           </div>
         </div>
 
+        <div class="card" id="road-segment-card">
+          <h2>Road Segments <span style="font-size:.75rem;color:#8f96b3;font-weight:400">(Phase B)</span></h2>
+          <div class="meta" id="road-segment-stats" style="margin-top:6px">No road segments built yet.</div>
+
+          <div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:8px">
+            <button class="btn road-seg-action-btn" disabled onclick="RoadMarker.markSelectedSegment('primary')" style="font-size:.75rem;border-color:#4a9eff;color:#4a9eff">Primary</button>
+            <button class="btn road-seg-action-btn" disabled onclick="RoadMarker.markSelectedSegment('secondary')" style="font-size:.75rem;border-color:#4caf50;color:#4caf50">Secondary</button>
+            <button class="btn road-seg-action-btn" disabled onclick="RoadMarker.markSelectedSegment('ignore')" style="font-size:.75rem;border-color:#888;color:#888">Ignore</button>
+            <button class="btn road-seg-action-btn" disabled onclick="RoadMarker.clearSelectedSegmentMark()" style="font-size:.75rem">Clear Mark</button>
+          </div>
+
+          <div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:8px">
+            <button class="btn road-seg-action-btn" disabled onclick="roadMaskToast('Segment Editor coming in Phase C.', 2500)" style="font-size:.75rem">Open Segment Editor</button>
+            <button class="btn road-seg-action-btn" disabled onclick="RoadMarker.exportRoadJson()" style="font-size:.75rem">Export Road JSON</button>
+            <button class="btn road-seg-action-btn" disabled onclick="if(confirm('Clear all road segments?')){RoadMarker.clearAllSegments();RoadMarker.updateRoadSegmentStats();document.querySelectorAll('.road-seg-action-btn').forEach(b=>b.disabled=true);}" style="font-size:.75rem">Clear Road Segments</button>
+          </div>
+        </div>
+
         <div class="card">
           <h2>Object Detail</h2>
           <div class="meta" id="structure-detail">Load a traced SVG to begin.</div>

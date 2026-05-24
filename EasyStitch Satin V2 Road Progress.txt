@@ -1117,4 +1117,150 @@ Implement checklist Step 6 only: UI controls for centerline endpoint — Build C
 - None for Step 6.
 
 ### Next step
-Proceed to checklist step 7 and 8 when requested.
+House.png has an issue — door and lower chimney rectangle render as solid black in the mask, producing incorrect centerlines. This is the known manual-split / assignment issue: those areas need to be split off from their surrounding satin paths and reassigned Fill.
+
+---
+
+## 2026-05-24 — Step 7/8 manual validation
+
+### Validation results
+
+All three test images were run through the full workflow: prep → trace → Pane 3 → auto-guess assignments → manual split where needed → Build Satin Mask → Build Centerline Graph.
+
+#### Puppy.png
+| Check | Result |
+|---|---|
+| Mask preview looks correct | ✅ yes |
+| Centerline overlay follows satin paths | ✅ yes |
+| Separate shapes accidentally connected | ✅ no |
+| Small closed loops preserved | ✅ yes |
+| Junction nodes sensible | ✅ yes |
+| Manual split/reassignment respected | ✅ yes |
+
+#### Happysun.png
+| Check | Result |
+|---|---|
+| Mask preview looks correct | ✅ yes |
+| Centerline overlay follows satin paths | ✅ yes |
+| Separate shapes accidentally connected | ✅ no |
+| Small closed loops preserved | ✅ yes |
+| Junction nodes sensible | ✅ yes |
+| Manual split/reassignment respected | ✅ yes |
+
+#### House.png
+| Check | Result |
+|---|---|
+| Mask preview looks correct | ❌ no — Door and lower rectangle of chimney render as solid black |
+| Centerline overlay follows satin paths | ❌ Mostly, but not around the door or lower chimney block |
+| Separate shapes accidentally connected | ✅ no |
+| Small closed loops preserved | ✅ yes |
+| Junction nodes sensible | ⚠️ Mostly, only incorrect due to the incorrectly identified areas |
+| Manual split/reassignment respected | ✅ yes |
+
+### Issues found
+- House.png has solid satin blocks for the door and lower chimney rectangle. These are likely regions that should be split off from their surrounding satin paths using Manual Split tool and reassigned to Fill.
+- This is expected behaviour — the auto-guess assigns large enclosed dark regions as satin. The fix is to use Manual Split in Pane 3 to cut those regions and assign them Fill before building the mask/graph.
+- This was already documented in the checklist as the required workflow: split off irregular shapes, assign Fill, keep narrow outline as Satin.
+
+### Next step
+Awaiting user direction before proceeding.
+
+---
+
+## 2026-05-24 09:14:00 IST - Phase B.1/B.2 — Road segment data model + side-panel editor
+
+### Current objective
+Implement Phase B.1 (road segment data model) and B.2 (side-panel editor) as described in the plan at line 799.
+
+### Files changed
+- path: refactor/web/static/js/state.js
+- function/section changed: added road segment state globals
+- reason for change: Phase B.1 needs frontend state for roadSegments array, selected segment ID, and built flag
+- whether code was added, removed, or modified: added 3 lines
+
+- path: refactor/web/static/js/road_marker.js
+- function/section changed: rewrote road_marker.js with Phase B additions
+- reason for change: added graph→segment conversion (buildRoadSegmentsFromGraph), side-panel stats (updateRoadSegmentStats), segment selection (selectRoadSegment/deselectRoadSegment), role marking (markSelectedSegment/clearSelectedSegmentMark), overlay colour updating (updateOverlaySegmentColors), overlay click handler (attachOverlayClickHandler), JSON export (exportRoadJson), segment cleanup (clearAllSegments). Updated renderCenterlineGraph to call buildRoadSegmentsFromGraph after successful API response. Edge paths in overlay SVG are tagged with data-edge-id for click selection.
+- whether code was added, removed, or modified: rewrote file (kept Phase A mask/graph functions, added all Phase B functions)
+
+- path: refactor/web/templates/index.html
+- function/section changed: replaced old Satin Road Graph card, added new Road Segments (Phase B) card
+- reason for change: Phase B.2 requires segment stats display, marking buttons (Primary/Secondary/Ignore/Clear Mark), and action buttons (Open Segment Editor placeholder, Export Road JSON, Clear Road Segments)
+- whether code was added, removed, or modified: modified HTML — kept existing Satin Road Graph card and overlay, added new Road Segments card after it
+
+### Commands run
+- command: python3 -m py_compile app.py easystitch_core/road_marker.py easystitch_core/__init__.py && echo "OK" && node --check web/static/js/road_marker.js && node --check web/static/js/app.js && node --check web/static/js/state.js && echo "JS OK"
+- success/failure: success
+- important output/error: OK + JS OK
+
+- command: started test server on port 5020 and verified Pane 3 HTML rendering via browser snapshot
+- success/failure: success
+- important output/error: Pane 3 shows all expected cards: Satin Road Mask, Satin Road Graph, Road Segments (Phase B) with disabled action buttons
+
+- command: python3 API test — centerline endpoint + data model + marking + export JSON
+- success/failure: success
+- important output/error: centerline: 8 edges, 13 nodes; mask_only: 4 satin, 10 excluded; roadSegments: 8; markings: 1P 1S 1I 5U; export JSON: 13408 bytes
+
+### Tests performed
+- what was tested: Python/JS syntax compilation
+- expected result: all files compile without errors
+- actual result: all passed
+- pass/fail: pass
+
+- what was tested: UI rendering in browser (Pane 3)
+- expected result: Road Segments card with stats display + marking buttons + action buttons
+- actual result: all Phase B.2 elements rendered (confirmed via browser snapshot)
+- pass/fail: pass
+
+- what was tested: API endpoint /api/roads/centerline still works
+- input file used: test_traced.svg (parsed as Pane 3 payload)
+- expected result: ok=true, 8 edges, 13 nodes
+- actual result: matched
+- pass/fail: pass
+
+- what was tested: API endpoint /api/roads/mask_only still works
+- input file used: same payload
+- expected result: ok=true, 4 satin, 10 excluded
+- actual result: matched
+- pass/fail: pass
+
+- what was tested: Backend graph edges → frontend roadSegments conversion (simulated in Python)
+- input file used: graph from /api/roads/centerline response
+- expected result: 8 segments with correct structure
+- actual result: 8 segments built
+- pass/fail: pass
+
+- what was tested: Road segment role marking (primary/secondary/ignore/unmarked)
+- expected result: roles and priorities set correctly
+- actual result: seg_0001=primary(0), seg_0002=secondary(1), seg_0004=ignore(null), rest=unmarked
+- pass/fail: pass
+
+- what was tested: Export JSON structure
+- expected result: valid JSON with segments, nodes, metadata
+- actual result: 13408 bytes, all fields present
+- pass/fail: pass
+
+### Debug outputs created
+- mask PNG: none
+- AutoTrace SVG: none
+- overlay SVG: none
+- graph JSON: none
+- screenshots if any: browser snapshot confirmed UI elements
+
+### Decisions made
+- Phase B.1 data model follows the plan's suggested structure exactly: segment_id (seg_NNNN), edge_id, source_node, target_node, points, length, source_object_ids, priority, role, selected, locked, start_rung_id, end_rung_id, notes.
+- Roles: unmarked (cyan), primary (blue), secondary (green), ignore (grey dashed).
+- Priority mapping: primary→0, secondary→1, ignore→null, unmarked→null.
+- Overlay edges tagged with data-edge-id attribute for click-based segment selection.
+- Road segment action buttons start disabled; enabled when Build Centerline Graph succeeds.
+- clearAllSegments() also disables all action buttons.
+- Export JSON follows version 1 schema: segments, nodes, rungs={}, stitch_order=[], metadata.
+- Open Segment Editor button shows toast placeholder for Phase C.
+- Existing Phase A (mask, graph, overlay) functionality preserved and unchanged.
+- Camofox browser_console evaluate endpoint was unreliable (HTTP 500), so full browser smoke test deferred to user.
+
+### Issues / blockers
+- Camofox browser_console evaluate endpoint returns HTTP 500 for JavaScript expression evaluation. Full UI workflow (prep → trace → Pane 3 → Build Centerline Graph → Road Segments) could not be completed in-browser. Python API tests confirm all backend logic works. Frontend JS is syntax-verified and HTML renders correctly. User should test the UI manually.
+
+### Next step
+Await user manual review and testing of Phase B.1/B.2.

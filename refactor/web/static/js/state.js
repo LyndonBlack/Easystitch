@@ -41,3 +41,8 @@ let draggingManualRung = null;
 let workZoom = 1.0;
 let designTargetLongestMm = null;
 let traceAutoRunOnce = false;
+
+// Satin V2 road segment editor state (Phase B+)
+let roadSegments = [];            // Array of road segment objects
+let roadSelectedSegmentId = null; // Currently selected segment ID (string or null)
+let roadSegmentsBuilt = false;    // True after centerline graph converted to segments
