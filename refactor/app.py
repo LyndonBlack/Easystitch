@@ -457,9 +457,12 @@ def create_app(initial_input: str | None, output_dir: str) -> Flask:
             graph = tag_split_boundary_nodes(graph)
             # Phase C.9: normalize graph topology before the frontend builds roadSegments.
             # Existing visible nodes become hard breakpoints on nearby underlying edges.
-            graph = normalize_graph_topology(graph, snap_tolerance=float(settings.get("topology_snap_tolerance", 12.0)))
+            # Can be disabled (topology_disable=true) for diagnostic — early split-then-clean
+            # should already produce node-to-node edges from object-boundary splitting.
             topology_snap_tolerance = float(settings.get("topology_snap_tolerance", 12.0))
-            graph = tag_split_boundary_nodes(graph)
+            if not settings.get("topology_disable", False):
+                graph = normalize_graph_topology(graph, snap_tolerance=topology_snap_tolerance)
+                graph = tag_split_boundary_nodes(graph)
             satin_objects = collect_satin_objects(objects, assignments)
             overlay_svg = build_road_graph_overlay_svg(svg_w_f, svg_h_f, satin_objects, graph)
             polyline_debug_svg = build_polyline_debug_svg(
