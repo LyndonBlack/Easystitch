@@ -469,6 +469,48 @@ def clean_centerline_polylines(
     return cleaned
 
 
+def _sample_label_at(
+    label_map: Image.Image,
+    x: float,
+    y: float,
+    scale: float,
+) -> int:
+    """Sample the object label map at SVG coordinate (x, y), returning the
+    satin-object label value (1-based) or 0 for background/out-of-bounds."""
+    sx = int(round(float(x) * scale))
+    sy = int(round(float(y) * scale))
+    if 0 <= sx < label_map.width and 0 <= sy < label_map.height:
+        pixel = label_map.getpixel((sx, sy))
+        return int(pixel) if isinstance(pixel, (int, float)) else 0
+    return 0
+
+
+def _bisect_boundary(
+    label_map: Image.Image,
+    scale: float,
+    a: list[float],
+    b: list[float],
+    a_label: int,
+    iterations: int = 10,
+) -> list[float]:
+    """Binary-search for the label transition point between points a and b.
+
+    a has label a_label, b has a different label.  After iterations the
+    midpoint is returned as the best estimate of the true pixel boundary.
+    """
+    ax, ay = float(a[0]), float(a[1])
+    bx, by = float(b[0]), float(b[1])
+    for _ in range(iterations):
+        mx = (ax + bx) / 2.0
+        my = (ay + by) / 2.0
+        label = _sample_label_at(label_map, mx, my, scale)
+        if label == a_label:
+            ax, ay = mx, my
+        else:
+            bx, by = mx, my
+    return [(ax + bx) / 2.0, (ay + by) / 2.0]
+
+
 def _render_object_label_map(
     objects: list[dict[str, Any]],
     assignments: dict[str, Any],
@@ -635,10 +677,15 @@ def split_polylines_at_object_boundaries(
 
             if (this_label is not None and current_label is not None
                     and this_label != current_label):
-                # Boundary detected — insert split at midpoint between points[i-1] and points[i]
-                mid_x = (float(points[i - 1][0]) + float(points[i][0])) / 2.0
-                mid_y = (float(points[i - 1][1]) + float(points[i][1])) / 2.0
-                current_points.append([mid_x, mid_y])
+                # Boundary detected — use bisection to find the true
+                # label transition point between points[i-1] and points[i]
+                boundary_point = _bisect_boundary(
+                    label_map, scale,
+                    [float(points[i - 1][0]), float(points[i - 1][1])],
+                    [float(points[i][0]), float(points[i][1])],
+                    current_label,
+                )
+                current_points.append(list(boundary_point))
 
                 if len(current_points) >= 2:
                     src_id = idx_to_obj_id.get(current_label, "")
@@ -649,7 +696,7 @@ def split_polylines_at_object_boundaries(
                 split_count += 1
 
                 # Start new segment from split point
-                current_points = [[mid_x, mid_y], [float(points[i][0]), float(points[i][1])]]
+                current_points = [[boundary_point[0], boundary_point[1]], [float(points[i][0]), float(points[i][1])]]
                 current_label = this_label
             else:
                 current_points.append([float(points[i][0]), float(points[i][1])])
@@ -1222,6 +1269,58 @@ def normalize_graph_topology(graph: dict[str, Any], snap_tolerance: float = 12.0
         normalized_nodes.append(normalized)
 
     return {"nodes": normalized_nodes, "edges": split_edges}
+
+
+def build_polyline_debug_svg(
+    svg_w: float,
+    svg_h: float,
+    raw_polylines: list[dict[str, Any]],
+    boundary_polylines: list[dict[str, Any]],
+    cleaned_polylines: list[dict[str, Any]],
+) -> str:
+    """Build a debug SVG comparing raw, boundary-split, and cleaned polylines.
+
+    - raw polylines: grey (#888)
+    - boundary split endpoints: magenta circles (#ff00ff)
+    - cleaned polylines: cyan (#00d5ff)
+    """
+    w = _format_number(svg_w)
+    h = _format_number(svg_h)
+    lines: list[str] = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}">',
+        f'  <rect x="0" y="0" width="{w}" height="{h}" fill="#10131c"/>',
+    ]
+
+    # Raw polylines in grey
+    for polyline in raw_polylines or []:
+        points = polyline.get("points") or []
+        if len(points) < 2:
+            continue
+        pts = " ".join(f"{_format_number(p[0])},{_format_number(p[1])}" for p in points)
+        lines.append(f'  <polyline points="{pts}" fill="none" stroke="#777" stroke-width="1.0" stroke-opacity="0.6" stroke-linecap="round" stroke-linejoin="round"/>')
+
+    # Boundary endpoints in magenta
+    for polyline in boundary_polylines or []:
+        points = polyline.get("points") or []
+        if not points:
+            continue
+        # First and last point of each boundary-split child are split markers
+        first = points[0]
+        last = points[-1] if len(points) > 1 else None
+        for pt in [first, last]:
+            if pt:
+                lines.append(f'  <circle cx="{_format_number(pt[0])}" cy="{_format_number(pt[1])}" r="3.0" fill="#ff00ff" fill-opacity="0.8" stroke="none"/>')
+
+    # Cleaned polylines in cyan
+    for polyline in cleaned_polylines or []:
+        points = polyline.get("points") or []
+        if len(points) < 2:
+            continue
+        pts = " ".join(f"{_format_number(p[0])},{_format_number(p[1])}" for p in points)
+        lines.append(f'  <polyline points="{pts}" fill="none" stroke="#00d5ff" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>')
+
+    lines.append("</svg>")
+    return "\n".join(lines)
 
 
 def build_road_graph_overlay_svg(

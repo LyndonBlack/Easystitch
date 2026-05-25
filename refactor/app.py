@@ -29,6 +29,7 @@ from easystitch_core.road_marker import (
     normalize_graph_topology,
     build_centerline_graph,
     build_road_graph_overlay_svg,
+    build_polyline_debug_svg,
 )
 from easystitch_core.export_pyembroidery import export_stitch_plan_to_jef, export_stitch_plan_to_vp3
 
@@ -436,21 +437,22 @@ def create_app(initial_input: str | None, output_dir: str) -> Flask:
                 error_threshold=error_threshold,
             )
             raw_polylines = parse_centerline_svg_to_polylines(autotrace_svg, scale=scale)
-            clean_polylines = clean_centerline_polylines(
+            # Phase B.3: split raw polylines at object boundaries BEFORE
+            # simplification, so corner geometry at boundaries is preserved.
+            boundary_split_polylines = split_polylines_at_object_boundaries(
                 raw_polylines,
-                min_length_px=min_length_px,
-                simplify_tolerance=simplify_tolerance,
-            )
-            # Phase B.3: split polylines at manual split boundaries between Satin objects
-            split_polylines = split_polylines_at_object_boundaries(
-                clean_polylines,
                 objects,
                 assignments,
                 svg_w_f,
                 svg_h_f,
                 scale=scale,
             )
-            graph = build_centerline_graph(split_polylines, snap_distance=snap_distance)
+            clean_polylines = clean_centerline_polylines(
+                boundary_split_polylines,
+                min_length_px=min_length_px,
+                simplify_tolerance=simplify_tolerance,
+            )
+            graph = build_centerline_graph(clean_polylines, snap_distance=snap_distance)
             # Phase B.3: tag nodes that sit between different Satin objects
             graph = tag_split_boundary_nodes(graph)
             # Phase C.9: normalize graph topology before the frontend builds roadSegments.
@@ -460,6 +462,12 @@ def create_app(initial_input: str | None, output_dir: str) -> Flask:
             graph = tag_split_boundary_nodes(graph)
             satin_objects = collect_satin_objects(objects, assignments)
             overlay_svg = build_road_graph_overlay_svg(svg_w_f, svg_h_f, satin_objects, graph)
+            polyline_debug_svg = build_polyline_debug_svg(
+                svg_w_f, svg_h_f,
+                raw_polylines,
+                boundary_split_polylines,
+                clean_polylines,
+            )
 
             png_buffer = BytesIO()
             clean_image.save(png_buffer, format="PNG")
@@ -476,6 +484,7 @@ def create_app(initial_input: str | None, output_dir: str) -> Flask:
                 "mask_height_px": mask_result["height_px"],
                 "mask_scale": mask_result["scale"],
                 "topology_snap_tolerance": topology_snap_tolerance,
+                "topology_diagnostic_edge_count": len(graph.get("edges", [])),
             }
 
             return jsonify({
@@ -495,6 +504,7 @@ def create_app(initial_input: str | None, output_dir: str) -> Flask:
                     "mask_png_base64": mask_png_base64,
                     "autotrace_svg": autotrace_svg,
                     "overlay_svg": overlay_svg,
+                    "polyline_debug_svg": polyline_debug_svg,
                 },
             })
         except Exception as e:
