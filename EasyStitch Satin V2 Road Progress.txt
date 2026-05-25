@@ -1627,3 +1627,34 @@ Rebuild the centerline graph in the UI and verify:
 - test.png: cross center should now have a junction node splitting all four arms
 - House chimney: edge1-n1-seg2 should split at the green endpoint into 2 segments
 - Puppy ear/head: spans should select between visible nodes only
+
+
+
+---
+
+## 2026-05-25 09:18:46 IST — Phase C.10 self-near-intersection splitting (archived)
+
+### Current objective
+Fix the house chimney corner by detecting where a centreline path passes near or crosses another non-adjacent part of itself (the chimney wrap path goes up one side, across the top, and down the other side — the corner is a self-near-contact).
+
+### What was implemented
+- `split_self_near_intersections()` in `easystitch_core/road_marker.py` — detects:
+  1. True self-crossings (figure-eight style)
+  2. Near-contacts where non-adjacent segments of the same edge come within threshold distance
+  3. Endpoint projecting onto its own non-adjacent interior
+- All safety gates exposed as UI toggles: detect distance, min gap, skip shared vertex, skip exact projection, min points, endpoint margin, DP simplify tolerance.
+- New node types `self_intersection` and `self_near_junction` rendered in purple (#bb44ff).
+
+### Outcome
+The chimney corner IS a self-near-contact (gap ≈3-4px). Setting `min gap` to 3 or below splits it correctly. However, this also compares all segment pairs ≥3px apart on every edge, creating false self-near-junction nodes on gentle window/door curves where non-adjacent segments happen to be 4-8px apart. No combination of safety gates could catch the chimney corner without also catching curve false positives.
+
+### Decision
+Phase C.10 is archived for now. The self-near-intersection approach is geometrically correct but the threshold cannot distinguish between a genuine wrap-path turn-around (should split) and a gentle curve (should not split) using distance alone. The backend code and commented-out UI toggles remain in place if a future solution is found.
+
+### Current stable defaults
+- topology_snap_tolerance: 12px
+- normalize: ON (the `topology_disable` diagnostic toggle remains in the UI)
+- Pipeline order: parse → split at object boundaries (with bisection) → clean/simplify → build graph → tag boundaries → normalize topology → tag boundaries → self-near-intersection (active but defaults produce no false positives at min_gap=12)
+
+### Remaining issue — house chimney corner (8-colour mode)
+The chimney corner is an intra-object geometry point (not at a Satin object boundary). It can only be caught by projecting a node from a side edge (edge10) onto the chimney wrap-path edge's interior. The projection distance from the green node to the DP-simplified polyline exceeds any reasonable tolerance. Self-near-intersection was the best alternative approach but hits the curve false-positive problem. Move on to next phase and revisit if needed.

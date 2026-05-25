@@ -290,6 +290,7 @@
           <div class="formrow" style="margin-top:4px">
             <label><input type="checkbox" id="topology-disable-check" onchange="document.getElementById('topology-disable-label').textContent=this.checked?'OFF (raw split only)':'ON (normalize)'"> <span id="topology-disable-label">ON (normalize)</span></label>
           </div>
+          <!-- Phase C.10 diagnostic toggles — kept for future self-near-intersection tuning
           <div class="formrow" style="margin-top:4px;padding-left:12px;border-left:2px solid #30476d" data-tooltip="Self-near-intersection safety gate toggles. Uncheck to disable, rebuild to test.">
             <label style="font-size:.72rem;color:#8f96b3">Self-near checks:</label>
             <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:4px">
@@ -328,6 +329,7 @@
               </div>
             </div>
           </div>
+          -->
           <div class="meta" id="road-graph-stats" style="margin-top:8px">No centerline graph built yet.</div>
           <div id="road-graph-overlay" class="preview-img-wrap" style="margin-top:8px;min-height:120px;max-height:400px;overflow:auto;background:#fff;border:1px solid #334;border-radius:6px;display:flex;align-items:center;justify-content:center;color:#555">
             Road graph overlay will appear here.
