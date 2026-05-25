@@ -1074,8 +1074,22 @@ def _split_edge_at_nodes(
         if float(projection["offset"]) > float(snap_tolerance):
             continue
         distance_along = float(projection["distance"])
-        if distance_along <= endpoint_margin or edge_length - distance_along <= endpoint_margin:
-            continue
+        near_start = distance_along <= endpoint_margin
+        near_end = edge_length - distance_along <= endpoint_margin
+        if near_start or near_end:
+            # Reject only if the node is at the SAME physical location as
+            # the edge's source or target that sits at this polyline endpoint.
+            # If the node is a DIFFERENT one that happens to project near
+            # the split boundary, allow it (genuine topology connection).
+            src_node = node_by_id.get(str(edge.get("source")))
+            tgt_node = node_by_id.get(str(edge.get("target")))
+            src_xy = [float(src_node["x"]), float(src_node["y"])] if src_node else None
+            tgt_xy = [float(tgt_node["x"]), float(tgt_node["y"])] if tgt_node else None
+            node_xy = [float(node.get("x", 0.0)), float(node.get("y", 0.0))]
+            matches_source = src_xy is not None and _point_distance(node_xy, src_xy) <= endpoint_margin
+            matches_target = tgt_xy is not None and _point_distance(node_xy, tgt_xy) <= endpoint_margin
+            if matches_source or matches_target:
+                continue  # same physical node as source/target — skip duplicate
         node_dir = _node_edge_direction(node_id, all_edges)
         target_dir = _segment_direction_at_distance(points, distance_along)
         if not _node_allowed_to_split_edge(
