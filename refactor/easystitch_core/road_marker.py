@@ -1316,6 +1316,9 @@ def split_self_near_intersections(
     segment_separation: float = 12.0,
     skip_shared_vertex: bool = True,
     skip_exact_projection: bool = True,
+    min_points: int = 4,
+    min_edge_length: float = 0.0,
+    endpoint_margin_check: float = 3.0,
 ) -> dict[str, Any]:
     """Split edges where a non-adjacent segment of the same edge crosses or
     passes near another part of itself.
@@ -1355,12 +1358,12 @@ def split_self_near_intersections(
 
     for edge in edges:
         points = [list(map(float, p)) for p in (edge.get("points") or [])]
-        if len(points) < 4:  # need at least 3 segments for a self-contact
+        if min_points > 0 and len(points) < min_points:  # need enough segments for a self-contact
             continue
         eid = str(edge.get("id"))
         dists = _walk_distances(points)
         total_length = dists[-1]
-        if total_length <= segment_separation:
+        if min_edge_length > 1e-9 and total_length < min_edge_length:
             continue
         endpoints: set[str] = {str(edge.get("source")), str(edge.get("target"))}
         seg_starts = list(range(len(points) - 1))
@@ -1406,7 +1409,7 @@ def split_self_near_intersections(
 
         # Endpoint-to-own-edge check
         edge_len = total_length
-        endpoint_margin = max(3.0, segment_separation / 2.0)
+        eff_endpoint_margin = max(endpoint_margin_check, 1.0) if endpoint_margin_check > 1e-9 else 0.0
         for ep_idx, ep_name in enumerate(["source", "target"]):
             ep_node_id = str(edge.get(ep_name, ""))
             ep_node = node_by_id.get(ep_node_id)
@@ -1418,8 +1421,8 @@ def split_self_near_intersections(
                 continue
             d_along = float(proj["distance"])
             # Skip if projection is near the endpoint itself
-            near_self = (ep_idx == 0 and d_along <= endpoint_margin) or \
-                        (ep_idx == 1 and edge_len - d_along <= endpoint_margin)
+            near_self = (ep_idx == 0 and d_along <= eff_endpoint_margin) or \
+                        (ep_idx == 1 and edge_len - d_along <= eff_endpoint_margin)
             if near_self:
                 continue
             if float(proj["offset"]) > snap_tolerance:

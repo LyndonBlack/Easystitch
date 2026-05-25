@@ -69,6 +69,9 @@ const RoadMarker = (function() {
         self_min_gap: parseFloat(document.getElementById('self-min-gap')?.value || 12),
         self_skip_shared_vertex: !!(document.getElementById('self-skip-shared-vertex')?.checked),
         self_skip_exact_projection: !!(document.getElementById('self-skip-exact-proj')?.checked),
+        self_min_points: parseInt(document.getElementById('self-min-points')?.value || 4, 10),
+        self_min_edge_length: 0.0,
+        self_endpoint_margin: parseFloat(document.getElementById('self-endpoint-margin')?.value || 3.0),
       },
     };
   }

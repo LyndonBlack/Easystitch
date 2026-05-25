@@ -473,6 +473,9 @@ def create_app(initial_input: str | None, output_dir: str) -> Flask:
                     segment_separation=float(settings.get("self_min_gap", 12.0)),
                     skip_shared_vertex=bool(settings.get("self_skip_shared_vertex", True)),
                     skip_exact_projection=bool(settings.get("self_skip_exact_projection", True)),
+                    min_points=int(settings.get("self_min_points", 4)),
+                    min_edge_length=float(settings.get("self_min_edge_length", 0.0)),
+                    endpoint_margin_check=float(settings.get("self_endpoint_margin", 3.0)),
                 )
                 graph = tag_split_boundary_nodes(graph)
             satin_objects = collect_satin_objects(objects, assignments)

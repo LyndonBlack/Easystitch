@@ -296,11 +296,22 @@
               <label style="font-size:.72rem"><input type="checkbox" id="self-skip-shared-vertex" checked> skip shared vertex</label>
               <label style="font-size:.72rem"><input type="checkbox" id="self-skip-exact-proj" checked> skip exact proj</label>
             </div>
-            <div class="range-row" style="margin-top:4px">
-              <label style="font-size:.72rem;color:#8f96b3">min gap:</label>
-              <input type="range" id="self-min-gap" min="0" max="30" step="1" value="12" oninput="syncVal('self-min-gap','self-min-gap-val','px')" style="width:80px">
-              <span class="val" id="self-min-gap-val" style="font-size:.72rem">12px</span>
-              <label style="font-size:.7rem;color:#666;margin-left:4px" title="0 = no minimum gap">(0=off)</label>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:2px">
+              <div class="range-row" style="gap:4px">
+                <label style="font-size:.72rem;color:#8f96b3">min gap:</label>
+                <input type="range" id="self-min-gap" min="0" max="30" step="1" value="12" oninput="syncVal('self-min-gap','self-min-gap-val','px')" style="width:60px">
+                <span class="val" id="self-min-gap-val" style="font-size:.72rem">12px</span>
+              </div>
+              <div class="range-row" style="gap:4px">
+                <label style="font-size:.72rem;color:#8f96b3">min pts:</label>
+                <input type="range" id="self-min-points" min="0" max="20" step="1" value="4" oninput="syncVal('self-min-points','self-min-points-val','')" style="width:50px">
+                <span class="val" id="self-min-points-val" style="font-size:.72rem">4</span>
+              </div>
+              <div class="range-row" style="gap:4px">
+                <label style="font-size:.72rem;color:#8f96b3">endpt margin:</label>
+                <input type="range" id="self-endpoint-margin" min="0" max="15" step="0.5" value="3" oninput="syncFloatVal('self-endpoint-margin','self-endpoint-margin-val','px')" style="width:60px">
+                <span class="val" id="self-endpoint-margin-val" style="font-size:.72rem">3px</span>
+              </div>
             </div>
           </div>
           <div class="meta" id="road-graph-stats" style="margin-top:8px">No centerline graph built yet.</div>
