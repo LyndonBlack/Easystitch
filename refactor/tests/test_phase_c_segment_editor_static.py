@@ -51,9 +51,20 @@ def test_phase_c_edges_have_visible_and_hit_paths_for_reliable_selection():
 def test_phase_c_selected_edge_uses_yellow_highlight_without_hiding_role_colour():
     assert "road-edge-selected-highlight" in JS
     assert "#ffeb3b" in JS
-    assert "visible.setAttribute('stroke', roleColor(seg.role))" in JS
+    assert "setRoadPathStroke(visible, roleColor(seg.role))" in JS
     assert "updateRoadEditorSelectionHighlight" in JS
     assert ".road-edge-selected-highlight" in CSS
+
+
+def test_secondary_role_is_orange_for_halo_readability():
+    assert "case 'secondary': return '#ff9800';" in JS
+    assert "#4caf50" not in JS
+
+
+def test_role_repaints_use_inline_style_to_override_css_stroke_defaults():
+    assert "function setRoadPathStroke" in JS
+    assert "path.style.setProperty('stroke', color)" in JS
+    assert "setRoadPathStroke(visible, roleColor(seg.role))" in JS
 
 
 def test_small_centerline_toolbar_overlay_has_separate_5px_hit_paths():
@@ -68,7 +79,7 @@ def test_small_centerline_toolbar_overlay_has_separate_5px_hit_paths():
 def test_small_centerline_toolbar_selection_highlight_does_not_hide_role_colour():
     assert "updateSmallOverlaySelectionHighlight" in JS
     assert "road-small-edge-selected-highlight" in JS
-    assert "el.setAttribute('stroke', roleColor(seg.role))" in JS
+    assert "setRoadPathStroke(el, roleColor(seg.role))" in JS
     assert "el.setAttribute('stroke', seg.selected ? '#ffeb3b'" not in JS
 
 

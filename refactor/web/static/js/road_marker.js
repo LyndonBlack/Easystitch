@@ -184,7 +184,7 @@ const RoadMarker = (function() {
   function roleColor(role) {
     switch (role) {
       case 'primary':   return '#4a9eff';
-      case 'secondary': return '#4caf50';
+      case 'secondary': return '#ff9800';
       case 'ignore':    return '#888';
       default:          return '#00bcd4'; // unmarked = cyan
     }
@@ -203,6 +203,12 @@ const RoadMarker = (function() {
     if (!svg || !edgeId) return null;
     return svg.querySelector(`.road-small-edge-visible[data-edge-id="${edgeId}"]`)
       || svg.querySelector(`[data-edge-id="${edgeId}"]:not(.road-small-edge-hit)`);
+  }
+
+  function setRoadPathStroke(path, color) {
+    if (!path) return;
+    path.setAttribute('stroke', color);
+    path.style.setProperty('stroke', color);
   }
 
   // ── selection ────────────────────────────────────────────────────────────
@@ -274,6 +280,7 @@ const RoadMarker = (function() {
       highlight.setAttribute('class', 'road-small-edge-selected-highlight');
       highlight.setAttribute('data-edge-id', seg.edge_id);
       highlight.setAttribute('stroke', '#ffeb3b');
+      highlight.style.setProperty('stroke', '#ffeb3b');
       highlight.setAttribute('stroke-width', '5');
       highlight.setAttribute('fill', 'none');
       highlight.setAttribute('stroke-linecap', 'round');
@@ -296,7 +303,7 @@ const RoadMarker = (function() {
     roadSegments.forEach(seg => {
       const el = overlayVisibleEdgeElement(svg, seg.edge_id);
       if (el) {
-        el.setAttribute('stroke', roleColor(seg.role));
+        setRoadPathStroke(el, roleColor(seg.role));
         if (seg.role === 'ignore') {
           el.setAttribute('stroke-dasharray', '4,4');
         } else {
@@ -321,7 +328,7 @@ const RoadMarker = (function() {
       const el = overlayVisibleEdgeElement(svg, seg.edge_id);
       if (el) {
         el.setAttribute('stroke-width', seg.selected ? '2.2' : '1.5');
-        el.setAttribute('stroke', roleColor(seg.role));
+        setRoadPathStroke(el, roleColor(seg.role));
       }
     });
     updateSmallOverlaySelectionHighlight(svg);
@@ -560,6 +567,7 @@ const RoadMarker = (function() {
       highlight.setAttribute('d', d);
       highlight.setAttribute('fill', 'none');
       highlight.setAttribute('stroke', '#ffeb3b');
+      highlight.style.setProperty('stroke', '#ffeb3b');
       highlight.setAttribute('stroke-width', '6');
       highlight.setAttribute('stroke-linecap', 'round');
       highlight.setAttribute('stroke-linejoin', 'round');
@@ -575,7 +583,7 @@ const RoadMarker = (function() {
     roadSegments.forEach(seg => {
       const visible = svg.querySelector(`.road-edge-visible[data-segment-id="${seg.segment_id}"]`);
       if (!visible) return;
-      visible.setAttribute('stroke', roleColor(seg.role));
+      setRoadPathStroke(visible, roleColor(seg.role));
       visible.setAttribute('stroke-width', seg.selected ? '2.6' : '1.8');
       visible.setAttribute('stroke-dasharray', seg.role === 'ignore' ? '6 4' : 'none');
     });
