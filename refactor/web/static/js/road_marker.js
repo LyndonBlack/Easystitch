@@ -205,8 +205,98 @@ const RoadMarker = (function() {
     return out;
   }
 
+  function segmentIntersection(a, b, c, d) {
+    const r = [b[0] - a[0], b[1] - a[1]];
+    const s = [d[0] - c[0], d[1] - c[1]];
+    const cross = r[0] * s[1] - r[1] * s[0];
+    if (Math.abs(cross) <= 1e-9) return null;
+
+    const ca = [c[0] - a[0], c[1] - a[1]];
+    const t = (ca[0] * s[1] - ca[1] * s[0]) / cross;
+    const u = (ca[0] * r[1] - ca[1] * r[0]) / cross;
+    if (t < -1e-9 || t > 1 + 1e-9 || u < -1e-9 || u > 1 + 1e-9) return null;
+
+    return {
+      point: interpolatePoint(a, b, Math.max(0, Math.min(1, t))),
+      t: Math.max(0, Math.min(1, t)),
+      u: Math.max(0, Math.min(1, u)),
+    };
+  }
+
+  function findNodeNearPoint(nodes, point, tolerance) {
+    const maxDistSq = tolerance * tolerance;
+    return (nodes || []).find(node => {
+      const xy = pointXY(node);
+      return xy && dist2(xy, point) <= maxDistSq;
+    }) || null;
+  }
+
+  function generatedIntersectionKey(point) {
+    return `${point[0].toFixed(3)},${point[1].toFixed(3)}`;
+  }
+
+  function addGeneratedIntersectionNodes(graphData) {
+    if (!graphData || !graphData.edges || !graphData.nodes) return;
+    const edges = (graphData.edges || []).map(edge => ({
+      edge,
+      points: (edge.points || []).map(pointXY).filter(p => p && Number.isFinite(p[0]) && Number.isFinite(p[1])),
+    })).filter(entry => entry.points.length >= 2);
+    const generatedByKey = new Map();
+    const usedNodeIds = new Set();
+    (graphData.nodes || []).forEach(node => {
+      if (!node || !node.id) return;
+      usedNodeIds.add(node.id);
+      if (node.type === 'generated_junction') {
+        const xy = pointXY(node);
+        if (xy) generatedByKey.set(generatedIntersectionKey(xy), node);
+      }
+    });
+    let nextGeneratedNodeIndex = 1;
+
+    function nextGeneratedNodeId() {
+      let id = `road_intersection_${String(nextGeneratedNodeIndex).padStart(4, '0')}`;
+      while (usedNodeIds.has(id)) {
+        nextGeneratedNodeIndex += 1;
+        id = `road_intersection_${String(nextGeneratedNodeIndex).padStart(4, '0')}`;
+      }
+      usedNodeIds.add(id);
+      nextGeneratedNodeIndex += 1;
+      return id;
+    }
+
+    for (let i = 0; i < edges.length; i++) {
+      for (let j = i + 1; j < edges.length; j++) {
+        const aEdge = edges[i];
+        const bEdge = edges[j];
+        for (let ai = 1; ai < aEdge.points.length; ai++) {
+          const a0 = aEdge.points[ai - 1];
+          const a1 = aEdge.points[ai];
+          for (let bi = 1; bi < bEdge.points.length; bi++) {
+            const b0 = bEdge.points[bi - 1];
+            const b1 = bEdge.points[bi];
+            const hit = segmentIntersection(a0, a1, b0, b1);
+            if (!hit) continue;
+            const point = hit.point;
+            if (findNodeNearPoint(graphData.nodes, point, ROAD_ATOMIC_NODE_TOLERANCE)) continue;
+            const key = generatedIntersectionKey(point);
+            if (generatedByKey.has(key)) continue;
+            const node = {
+              id: nextGeneratedNodeId(),
+              x: Number(point[0].toFixed(6)),
+              y: Number(point[1].toFixed(6)),
+              type: 'generated_junction',
+            };
+            generatedByKey.set(key, node);
+            graphData.nodes.push(node);
+          }
+        }
+      }
+    }
+  }
+
   function buildAtomicRoadSegmentsFromGraph(graphData) {
     if (!graphData || !graphData.edges || !graphData.nodes) return [];
+    addGeneratedIntersectionNodes(graphData);
     const segments = [];
 
     (graphData.edges || []).forEach(edge => {
@@ -782,8 +872,9 @@ const RoadMarker = (function() {
       c.setAttribute('class', 'road-node');
       c.setAttribute('cx', String(node.x));
       c.setAttribute('cy', String(node.y));
-      c.setAttribute('r', node.type === 'manual_split_boundary' ? '3.8' : (node.type === 'junction' ? '3.2' : '2.4'));
-      c.setAttribute('fill', node.type === 'manual_split_boundary' ? '#ff00ff' : (node.type === 'junction' ? '#ff9800' : '#2ecc71'));
+      const isJunction = node.type === 'junction' || node.type === 'generated_junction';
+      c.setAttribute('r', node.type === 'manual_split_boundary' ? '3.8' : (isJunction ? '3.2' : '2.4'));
+      c.setAttribute('fill', node.type === 'manual_split_boundary' ? '#ff00ff' : (isJunction ? '#ff9800' : '#2ecc71'));
       c.setAttribute('stroke', '#fff');
       c.setAttribute('stroke-width', '0.8');
       layer.appendChild(c);
@@ -919,6 +1010,23 @@ const RoadMarker = (function() {
       svgEl.insertBefore(hit, firstNode);
       svgEl.insertBefore(visible, firstNode);
     });
+
+    const generatedNodes = (roadGraphData && roadGraphData.nodes) ? roadGraphData.nodes.filter(n => n.type === 'generated_junction') : [];
+    generatedNodes.forEach(node => {
+      if (svgEl.querySelector(`circle[data-node-id="${node.id}"]`)) return;
+      const c = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      c.setAttribute('class', 'road-generated-junction-node');
+      c.setAttribute('data-node-id', node.id);
+      c.setAttribute('cx', String(node.x));
+      c.setAttribute('cy', String(node.y));
+      c.setAttribute('r', '3.2');
+      c.setAttribute('fill', '#ff9800');
+      c.setAttribute('stroke', '#fff');
+      c.setAttribute('stroke-width', '0.8');
+      c.setAttribute('vector-effect', 'non-scaling-stroke');
+      c.setAttribute('pointer-events', 'none');
+      svgEl.appendChild(c);
+    });
   }
 
   // ── render: centerline graph + overlay + segments (Phase A + B) ─────────
@@ -939,12 +1047,14 @@ const RoadMarker = (function() {
     const graph = data.graph || {};
     roadGraphData = graph;
     roadEditorViewBox = null;
+
+    // Phase B.1/C.7/C.8: build atomic road segments before rendering/selecting overlays.
+    // This may add generated_junction nodes for edge/edge intersections missed by AutoTrace.
+    buildRoadSegmentsFromGraph(graph);
+
     const nodes = graph.nodes || [];
     const edges = graph.edges || [];
-    const junctionCount = nodes.filter(n => n.type === 'junction').length;
-
-    // Phase B.1/C.7: build atomic road segments before rendering/selecting overlays.
-    buildRoadSegmentsFromGraph(graph);
+    const junctionCount = nodes.filter(n => n.type === 'junction' || n.type === 'generated_junction').length;
 
     stats.innerHTML = `
       Satin objects included: <b>${s.satin_object_count}</b><br>

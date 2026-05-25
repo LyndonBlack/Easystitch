@@ -1407,3 +1407,62 @@ Implement Phase C only: large Segment Editor overlay for existing road segments,
 
 ### Next step
 Manual browser validation on Puppy/HappySun/House for visual alignment and click targeting, then continue only if overlay behaviour is stable.
+
+---
+
+## 2026-05-25 08:51:50 IST - Phase C.8 generated intersection junctions
+
+### Current objective
+Fix remaining Phase C.7 road segment spans where AutoTrace edges geometrically cross or pass through apparent junctions without emitting a backend graph node.
+
+### Files changed
+- path: /home/lyndon/AI/Easystitch/refactor/web/static/js/road_marker.js
+- function/section changed: atomic segment builder, generated junction insertion, small overlay node rendering, large editor node rendering, junction stats
+- reason for change: user screenshot showed long selectable spans still crossing visible junctions; the center of the inner cross had no marked junction node
+- whether code was added, removed, or modified: modified JS
+
+- path: /home/lyndon/AI/Easystitch/refactor/tests/test_phase_c7_atomic_segments_behavior.py
+- function/section changed: JS builder harness and atomic segmentation behavior tests
+- reason for change: add regression coverage for generated edge/edge intersection nodes and mixed existing-node/generated-node splitting
+- whether code was added, removed, or modified: modified tests
+
+### Commands run
+- command: python3.14 -m pytest tests/test_phase_c7_atomic_segments_behavior.py -q
+- success/failure: success after implementation
+- important output/error: 4 passed
+
+- command: node --check web/static/js/road_marker.js && python3.14 -m pytest tests/test_phase_c7_atomic_segments_behavior.py -q && python3.14 -m pytest tests -q
+- success/failure: success
+- important output/error: 34 passed
+
+### Tests performed
+- what was tested: edge/edge crossing with no backend node creates one generated_junction and splits both edges
+- input file used: synthetic graph in tests/test_phase_c7_atomic_segments_behavior.py
+- expected result: four atomic spans around one generated center node
+- actual result: pass
+- pass/fail: pass
+
+- what was tested: long edge split first at existing graph node and then at generated edge/edge intersection
+- input file used: synthetic graph in tests/test_phase_c7_atomic_segments_behavior.py
+- expected result: three ordered spans on the long edge
+- actual result: pass
+- pass/fail: pass
+
+### Debug outputs created
+- mask PNG: none
+- AutoTrace SVG: none
+- overlay SVG: none
+- graph JSON: none
+- screenshots if any: user-provided screenshot at /home/lyndon/Pictures/Screenshots/Screenshot From 2026-05-25 08-34-26.png, not modified
+
+### Decisions made
+- Keep backend AutoTrace graph untouched; generate missing intersection junctions in the frontend atomic segmentation stage.
+- Generated nodes use type generated_junction and deterministic road_intersection_#### IDs.
+- Reuse existing graph nodes within ROAD_ATOMIC_NODE_TOLERANCE instead of generating duplicates.
+- Render generated junctions orange like other junctions in both the small preview and full editor.
+
+### Issues / blockers
+- Collinear/overlapping edge geometry is not split by this pass; current fix targets proper line crossings and existing-node projections.
+
+### Next step
+User should rebuild the centerline graph for puppy and confirm the ear/head and inner cross now split at every visible junction.

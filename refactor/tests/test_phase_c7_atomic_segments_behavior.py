@@ -19,11 +19,13 @@ const sandbox = {{
   document: {{ getElementById: () => null, querySelectorAll: () => [] }},
 }};
 const RoadMarker = vm.runInNewContext(code + "\\nRoadMarker;", sandbox);
-RoadMarker.buildRoadSegmentsFromGraph({json.dumps(graph)});
+const graphData = {json.dumps(graph)};
+RoadMarker.buildRoadSegmentsFromGraph(graphData);
 process.stdout.write(JSON.stringify({{
   built: sandbox.roadSegmentsBuilt,
   selected: sandbox.roadSelectedSegmentId,
   segments: sandbox.roadSegments,
+  graph: graphData,
 }}));
 """
     result = subprocess.run(
@@ -94,3 +96,68 @@ def test_phase_c7_ignores_nodes_outside_four_px_tolerance_and_duplicate_endpoint
     assert seg["target_node"] == "node_b"
     assert seg["points"] == [[0, 0], [30, 0]]
     assert seg["source_edge_id"] == "edge_a"
+
+
+def test_phase_c7_splits_crossing_edges_at_generated_intersection_node():
+    graph = {
+        "nodes": [
+            {"id": "node_l", "x": 0, "y": 10},
+            {"id": "node_r", "x": 20, "y": 10},
+            {"id": "node_t", "x": 10, "y": 0},
+            {"id": "node_b", "x": 10, "y": 20},
+        ],
+        "edges": [
+            {"id": "edge_h", "source": "node_l", "target": "node_r", "points": [[0, 10], [20, 10]], "length": 20},
+            {"id": "edge_v", "source": "node_t", "target": "node_b", "points": [[10, 0], [10, 20]], "length": 20},
+        ],
+    }
+
+    out = run_road_marker_builder(graph)
+
+    generated = [n for n in out["graph"]["nodes"] if n["id"].startswith("road_intersection_")]
+    assert len(generated) == 1
+    assert generated[0]["type"] == "generated_junction"
+    assert generated[0]["x"] == 10
+    assert generated[0]["y"] == 10
+    generated_id = generated[0]["id"]
+
+    by_edge = {}
+    for segment in out["segments"]:
+        by_edge.setdefault(segment["source_edge_id"], []).append(segment)
+
+    assert [(s["source_node"], s["target_node"], s["points"]) for s in by_edge["edge_h"]] == [
+        ("node_l", generated_id, [[0, 10], [10, 10]]),
+        (generated_id, "node_r", [[10, 10], [20, 10]]),
+    ]
+    assert [(s["source_node"], s["target_node"], s["points"]) for s in by_edge["edge_v"]] == [
+        ("node_t", generated_id, [[10, 0], [10, 10]]),
+        (generated_id, "node_b", [[10, 10], [10, 20]]),
+    ]
+
+
+def test_phase_c7_splits_long_edge_at_node_then_generated_intersection():
+    graph = {
+        "nodes": [
+            {"id": "node_a", "x": 0, "y": 0},
+            {"id": "node_mid", "x": 10, "y": 0},
+            {"id": "node_b", "x": 30, "y": 0},
+            {"id": "node_top", "x": 20, "y": -10},
+            {"id": "node_bottom", "x": 20, "y": 10},
+        ],
+        "edges": [
+            {"id": "edge_long", "source": "node_a", "target": "node_b", "points": [[0, 0], [30, 0]], "length": 30},
+            {"id": "edge_cross", "source": "node_top", "target": "node_bottom", "points": [[20, -10], [20, 10]], "length": 20},
+        ],
+    }
+
+    out = run_road_marker_builder(graph)
+
+    generated = [n for n in out["graph"]["nodes"] if n["id"].startswith("road_intersection_")]
+    assert len(generated) == 1
+    generated_id = generated[0]["id"]
+    long_segments = [s for s in out["segments"] if s["source_edge_id"] == "edge_long"]
+    assert [(s["source_node"], s["target_node"], s["points"]) for s in long_segments] == [
+        ("node_a", "node_mid", [[0, 0], [10, 0]]),
+        ("node_mid", generated_id, [[10, 0], [20, 0]]),
+        (generated_id, "node_b", [[20, 0], [30, 0]]),
+    ]
