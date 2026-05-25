@@ -1574,3 +1574,56 @@ Move the previous frontend C.8 topology patch into the backend graph-building pi
 
 ### Next step
 Rebuild the centerline graph in the UI and manually verify Puppy/House cases: ear/head/face spans and roof/chimney/window cross sections should select between visible nodes only, without highlighting across a junction dot.
+
+
+---
+
+## 2026-05-25 09:18:46 IST - Phase C.9a edge/edge intersection + angle-based T-junction detection
+
+### Current objective
+Fix two lingering topology issues in the backend: (1) edges that cross without a backend graph node at the intersection now get a generated node, (2) endpoint-to-edge snapping now uses geometric angle detection instead of a hard offset threshold, so genuine T-junctions snap correctly even at moderate distances while nearby parallel paths are still rejected.
+
+### Changes
+- **Edge/edge intersection detection**: `_add_edge_intersection_nodes()` checks every pair of edges for segment-level crossings. Where two polylines geometrically cross without an existing node within snap_tolerance, a `generated_junction` node is created. The downstream edge-splitting loop then splits both edges at this new node, exactly like the old C.8 frontend patch but now in the backend.
+
+- **Angle-based T-junction vs parallel rejection**: `_node_allowed_to_split_edge()` now receives the node's own edge direction and the target edge direction at the projection point. If the angle between them exceeds 30°, the connection is treated as a genuine T-junction and allowed at the full snap tolerance. If the angle is ≤30° (near-parallel paths), it falls through to the strict 2px tolerance. This replaces the previous blanket strict_tolerance cutoff for all endpoint nodes from different objects.
+
+- **Projection direction helpers**: Added `_node_edge_direction()`, `_vector_angle_degrees()`, `_segment_direction_at_distance()`, and `_segment_intersection()`.
+
+### Files changed
+- path: /home/lyndon/AI/Easystitch/refactor/easystitch_core/road_marker.py
+- function/section changed: added 5 new helper functions, modified `_node_allowed_to_split_edge()` and `normalize_graph_topology()`
+- reason for change: edge/edge intersection nodes missing; endpoint snaptoo tight for off-object T-junctions
+- whether code was added, removed, or modified: added/modified
+
+- path: /home/lyndon/AI/Easystitch/refactor/tests/test_phase_c9_topology_normalization.py
+- function/section changed: added `test_normalize_topology_creates_node_at_edge_crossing` and `test_normalize_topology_allows_endpoint_T_junction_across_objects`
+- reason for change: regression coverage for both fixes
+- whether code was added, removed, or modified: added tests
+
+### Commands run
+- command: python3.14 -m pytest tests/test_phase_c9_topology_normalization.py -q
+- success/failure: success
+- important output/error: 6 passed (4 existing + 2 new)
+
+- command: node --check web/static/js/road_marker.js && node --check web/static/js/state.js && python3.14 -m pytest tests -q
+- success/failure: success
+- important output/error: 40 passed (was 38 before new tests)
+
+### Decisions made
+- Edge/edge intersection detection happens inside `normalize_graph_topology()` as a first pass, before the main node-to-edge projection loop. Generated nodes are then picked up by the existing split logic.
+- One intersection per edge pair (first segment-level crossing found), not all crossings. Multiple full-edge crossings in practice mean a shared path segment, which is rarer.
+- Angle threshold of 30° is a reasonable geometric separator between "branch meeting trunk" (typically 60-90°) and "parallel path passing near" (typically <20°). Tune if needed.
+- The old `strict_snap_tolerance = min(2.0, snap_tolerance / 4.0)` is retained as a last-resort safety check for truly degenerate cases (angle info unavailable, zero-length edge, etc.).
+
+### Issues / blockers
+- If two edges cross at exactly the same point as an existing node (within snap_tolerance), no duplicate node is created — correct behaviour.
+- If an edge crosses another edge that it already shares a node with (via source/target endpoints), the pair is skipped — no false node created at the shared endpoint.
+- Generated edges after normalization may re-introduce the same split pattern for the new child edges, but the normalization runs only once (non-recursive). Second pass not needed because child edges have clean source/target endpoints.
+- Existing unrelated dirty files/assets remain in the working tree.
+
+### Next step
+Rebuild the centerline graph in the UI and verify:
+- test.png: cross center should now have a junction node splitting all four arms
+- House chimney: edge1-n1-seg2 should split at the green endpoint into 2 segments
+- Puppy ear/head: spans should select between visible nodes only

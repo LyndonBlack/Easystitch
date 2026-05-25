@@ -858,23 +858,178 @@ def _node_connected_source_ids(node_id: str, edges: list[dict[str, Any]]) -> set
     return ids
 
 
+def _segment_intersection(a0: list[float], a1: list[float],
+                          b0: list[float], b1: list[float]) -> list[float] | None:
+    """Return the intersection point of two line segments, or None."""
+    ax, ay = a0
+    bx, by = a1
+    cx, cy = b0
+    dx, dy = b1
+    r = [bx - ax, by - ay]
+    s = [dx - cx, dy - cy]
+    cross = r[0] * s[1] - r[1] * s[0]
+    if abs(cross) <= 1e-9:
+        return None  # collinear or parallel
+    ca = [cx - ax, cy - ay]
+    t = (ca[0] * s[1] - ca[1] * s[0]) / cross
+    u = (ca[0] * r[1] - ca[1] * r[0]) / cross
+    if t < -1e-9 or t > 1 + 1e-9 or u < -1e-9 or u > 1 + 1e-9:
+        return None  # outside segment bounds
+    return [ax + r[0] * max(0.0, min(1.0, t)),
+            ay + r[1] * max(0.0, min(1.0, t))]
+
+
+def _node_edge_direction(node_id: str, edges: list[dict[str, Any]]) -> list[float] | None:
+    """Get the direction vector of the edge connected to this node at the node end."""
+    for edge in edges:
+        points = edge.get("points") or []
+        if len(points) < 2:
+            continue
+        if edge.get("source") == node_id:
+            p0, p1 = points[0], points[1]
+            return [float(p1[0]) - float(p0[0]), float(p1[1]) - float(p0[1])]
+        if edge.get("target") == node_id:
+            p0, p1 = points[-2], points[-1]
+            return [float(p1[0]) - float(p0[0]), float(p1[1]) - float(p0[1])]
+    return None
+
+
+def _vector_angle_degrees(v1: list[float], v2: list[float]) -> float:
+    dot = v1[0] * v2[0] + v1[1] * v2[1]
+    mag1 = math.hypot(v1[0], v1[1])
+    mag2 = math.hypot(v2[0], v2[1])
+    if mag1 <= 1e-9 or mag2 <= 1e-9:
+        return 0.0
+    cos_angle = max(-1.0, min(1.0, dot / (mag1 * mag2)))
+    return math.degrees(math.acos(cos_angle))
+
+
+def _segment_direction_at_distance(points: list[list[float]], distance: float) -> list[float]:
+    """Return the direction of the polyline segment at a given distance along it."""
+    walked = 0.0
+    for a, b in zip(points, points[1:]):
+        seg_len = _point_distance(a, b)
+        if seg_len <= 1e-9:
+            continue
+        if walked + seg_len >= distance:
+            return [float(b[0]) - float(a[0]), float(b[1]) - float(a[1])]
+        walked += seg_len
+    if len(points) >= 2:
+        return [float(points[-1][0]) - float(points[-2][0]),
+                float(points[-1][1]) - float(points[-2][1])]
+    return [1.0, 0.0]
+
+
+def _add_edge_intersection_nodes(graph: dict[str, Any], snap_tolerance: float) -> int:
+    """Detect edge/edge crossings and add generated_junction nodes.
+
+    For every pair of edges whose polylines geometrically cross without an
+    existing node at the intersection, a node is created.
+    Returns the number of new nodes added.
+    """
+    edges = graph.get("edges") or []
+    nodes = graph.get("nodes") or []
+    added = 0
+    existing_node_ids: set[str] = set()
+    for node in nodes:
+        nid = node.get("id")
+        if nid:
+            existing_node_ids.add(str(nid))
+
+    edge_entries: list[dict[str, Any]] = []
+    for edge in edges:
+        points = [list(map(float, p)) for p in (edge.get("points") or [])]
+        if len(points) >= 2:
+            edge_entries.append({"edge": edge, "points": points})
+
+    for i in range(len(edge_entries)):
+        for j in range(i + 1, len(edge_entries)):
+            a_entry = edge_entries[i]
+            b_entry = edge_entries[j]
+            a_edge = a_entry["edge"]
+            b_edge = b_entry["edge"]
+            # Skip if the edges already share a node endpoint
+            a_src = a_edge.get("source")
+            a_tgt = a_edge.get("target")
+            b_src = b_edge.get("source")
+            b_tgt = b_edge.get("target")
+            if a_src in (b_src, b_tgt) or a_tgt in (b_src, b_tgt):
+                continue
+            a_points = a_entry["points"]
+            b_points = b_entry["points"]
+
+            for ai in range(1, len(a_points)):
+                a0 = a_points[ai - 1]
+                a1 = a_points[ai]
+                for bi in range(1, len(b_points)):
+                    b0 = b_points[bi - 1]
+                    b1 = b_points[bi]
+                    hit = _segment_intersection(a0, a1, b0, b1)
+                    if hit is None:
+                        continue
+                    # Don't create a node if one already exists at this point
+                    already = False
+                    for node in nodes:
+                        nx = float(node.get("x", 0))
+                        ny = float(node.get("y", 0))
+                        if _point_distance(hit, [nx, ny]) <= snap_tolerance:
+                            already = True
+                            break
+                    if already:
+                        continue
+                    # Generate a unique id
+                    counter = 1
+                    while f"gen_junction_{counter}" in existing_node_ids:
+                        counter += 1
+                    nid = f"gen_junction_{counter}"
+                    existing_node_ids.add(nid)
+                    new_node = {
+                        "id": nid,
+                        "x": round(hit[0], 6),
+                        "y": round(hit[1], 6),
+                        "type": "generated_junction",
+                        "degree": 0,
+                    }
+                    nodes.append(new_node)
+                    added += 1
+                    break  # one intersection per edge pair is enough
+                if added > 0:
+                    break
+    return added
+
+
 def _node_allowed_to_split_edge(
     node: dict[str, Any],
     edge: dict[str, Any],
     all_edges: list[dict[str, Any]],
     projection_offset: float,
     strict_snap_tolerance: float,
+    node_edge_direction: list[float] | None = None,
+    target_edge_direction: list[float] | None = None,
 ) -> bool:
     node_type = str(node.get("type") or "")
     if node_type not in {"endpoint", "junction", "manual_split_boundary", "generated_junction", "pass_through"}:
         return False
+    # Always split at junctions, boundaries, or generated intersections
     if node_type in {"junction", "manual_split_boundary", "generated_junction"}:
         return True
 
+    # For endpoints and pass_through: check source object overlap first
     target_ids = _edge_source_id_set(edge)
     node_ids = _node_connected_source_ids(str(node.get("id", "")), all_edges)
     if target_ids and node_ids and target_ids.intersection(node_ids):
         return True
+
+    # Use angle-based geometric rejection for different-object connections.
+    # If the node's own edge approaches the target edge at >30°, it's a
+    # genuine T-junction — allow at full snap tolerance.
+    # If the angle is small, the paths run parallel — only allow at strict tolerance.
+    if node_edge_direction is not None and target_edge_direction is not None:
+        angle = _vector_angle_degrees(node_edge_direction, target_edge_direction)
+        if angle > 30.0:
+            return True  # genuine T-junction
+
+    # Parallel/nearby: only allow if very close
     return projection_offset <= strict_snap_tolerance
 
 
@@ -898,6 +1053,11 @@ def normalize_graph_topology(graph: dict[str, Any], snap_tolerance: float = 8.0)
     edges = [dict(edge) for edge in (graph.get("edges", []) or [])]
     if not nodes or not edges:
         return {"nodes": nodes, "edges": edges}
+
+    # Phase C.9a: detect edge/edge crossings and create generated_junction nodes
+    _add_edge_intersection_nodes(graph, snap_tolerance)
+    nodes = list(graph.get("nodes", []) or [])
+    edges = list(graph.get("edges", []) or [])
 
     node_by_id = {str(node.get("id")): node for node in nodes if node.get("id") is not None}
     strict_snap_tolerance = min(2.0, float(snap_tolerance) / 4.0)
@@ -927,7 +1087,12 @@ def normalize_graph_topology(graph: dict[str, Any], snap_tolerance: float = 8.0)
             distance_along = float(projection["distance"])
             if distance_along <= endpoint_margin or edge_length - distance_along <= endpoint_margin:
                 continue
-            if not _node_allowed_to_split_edge(node, edge, edges, float(projection["offset"]), strict_snap_tolerance):
+            node_dir = _node_edge_direction(node_id, edges)
+            target_dir = _segment_direction_at_distance(points, distance_along)
+            if not _node_allowed_to_split_edge(
+                node, edge, edges, float(projection["offset"]),
+                strict_snap_tolerance, node_dir, target_dir,
+            ):
                 continue
             boundaries.append({"node_id": node_id, "distance": distance_along})
 

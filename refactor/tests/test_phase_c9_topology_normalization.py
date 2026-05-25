@@ -167,3 +167,68 @@ def test_normalize_graph_topology_allows_very_close_different_object_endpoint():
         ("node_a", "node_c"),
         ("node_c", "node_b"),
     ]
+
+
+def test_normalize_topology_creates_node_at_edge_crossing():
+    """Two edges cross at 90° with no node at the intersection."""
+    graph = {
+        "nodes": [
+            {"id": "node_l", "x": 0, "y": 10, "type": "endpoint", "degree": 1},
+            {"id": "node_r", "x": 20, "y": 10, "type": "endpoint", "degree": 1},
+            {"id": "node_t", "x": 10, "y": 0, "type": "endpoint", "degree": 1},
+            {"id": "node_b", "x": 10, "y": 20, "type": "endpoint", "degree": 1},
+        ],
+        "edges": [
+            {"id": "edge_h", "source": "node_l", "target": "node_r",
+             "points": [[0, 10], [20, 10]], "length": 20, "source_object_ids": ["satin_1"]},
+            {"id": "edge_v", "source": "node_t", "target": "node_b",
+             "points": [[10, 0], [10, 20]], "length": 20, "source_object_ids": ["satin_2"]},
+        ],
+    }
+
+    normalized = normalize_graph_topology(graph, snap_tolerance=8.0)
+
+    gen_nodes = [node for node in normalized["nodes"]
+                 if node.get("id", "").startswith("gen_junction_")]
+    assert len(gen_nodes) == 1
+    gen_id = gen_nodes[0]["id"]
+
+    # Both original edges should now be split into two spans each
+    h_children = [e for e in normalized["edges"]
+                  if e.get("source_edge_id") == "edge_h" and e["id"].startswith("edge_h")]
+    v_children = [e for e in normalized["edges"]
+                  if e.get("source_edge_id") == "edge_v" and e["id"].startswith("edge_v")]
+    assert len(h_children) == 2
+    assert len(v_children) == 2
+    assert {e["source"] for e in h_children} == {"node_l", gen_id}
+    assert {e["target"] for e in h_children} == {gen_id, "node_r"}
+    assert {e["source"] for e in v_children} == {"node_t", gen_id}
+    assert {e["target"] for e in v_children} == {gen_id, "node_b"}
+
+
+def test_normalize_topology_allows_endpoint_T_junction_across_objects():
+    """A vertical branch projects 5px from a horizontal edge. Since the angle
+    is 90° (genuine T-junction), allow the snap despite different object ids."""
+    graph = {
+        "nodes": [
+            {"id": "node_a", "x": 0, "y": 0, "type": "endpoint", "degree": 1},
+            {"id": "node_b", "x": 30, "y": 0, "type": "endpoint", "degree": 1},
+            {"id": "node_c", "x": 15, "y": 5, "type": "endpoint", "degree": 1},
+            {"id": "node_d", "x": 15, "y": 15, "type": "endpoint", "degree": 1},
+        ],
+        "edges": [
+            {"id": "edge_top", "source": "node_a", "target": "node_b",
+             "points": [[0, 0], [30, 0]], "length": 30, "source_object_ids": ["satin_1"]},
+            {"id": "edge_branch", "source": "node_c", "target": "node_d",
+             "points": [[15, 5], [15, 15]], "length": 10, "source_object_ids": ["satin_2"]},
+        ],
+    }
+
+    normalized = normalize_graph_topology(graph, snap_tolerance=8.0)
+
+    top_children = [e for e in normalized["edges"]
+                    if e.get("source_edge_id") == "edge_top"]
+    assert len(top_children) == 2
+    endpoints = {top_children[0]["source"], top_children[0]["target"],
+                 top_children[1]["source"], top_children[1]["target"]}
+    assert "node_c" in endpoints
