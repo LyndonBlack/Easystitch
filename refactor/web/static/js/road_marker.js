@@ -199,6 +199,12 @@ const RoadMarker = (function() {
     }
   }
 
+  function overlayVisibleEdgeElement(svg, edgeId) {
+    if (!svg || !edgeId) return null;
+    return svg.querySelector(`.road-small-edge-visible[data-edge-id="${edgeId}"]`)
+      || svg.querySelector(`[data-edge-id="${edgeId}"]:not(.road-small-edge-hit)`);
+  }
+
   // ── selection ────────────────────────────────────────────────────────────
 
   function selectRoadSegment(segmentId) {
@@ -256,6 +262,28 @@ const RoadMarker = (function() {
     roadMaskToast(`Segment ${seg.segment_id} cleared to Unmarked`, 2000);
   }
 
+  function updateSmallOverlaySelectionHighlight(svg) {
+    if (!svg) return;
+    svg.querySelectorAll('.road-small-edge-selected-highlight').forEach(el => el.remove());
+    roadSegments.filter(seg => seg.selected).forEach(seg => {
+      const visible = overlayVisibleEdgeElement(svg, seg.edge_id);
+      if (!visible || !visible.parentNode) return;
+      const highlight = visible.cloneNode(false);
+      highlight.removeAttribute('id');
+      highlight.removeAttribute('style');
+      highlight.setAttribute('class', 'road-small-edge-selected-highlight');
+      highlight.setAttribute('data-edge-id', seg.edge_id);
+      highlight.setAttribute('stroke', '#ffeb3b');
+      highlight.setAttribute('stroke-width', '5');
+      highlight.setAttribute('fill', 'none');
+      highlight.setAttribute('stroke-linecap', 'round');
+      highlight.setAttribute('stroke-linejoin', 'round');
+      highlight.setAttribute('pointer-events', 'none');
+      highlight.setAttribute('vector-effect', 'non-scaling-stroke');
+      visible.parentNode.insertBefore(highlight, visible);
+    });
+  }
+
   /**
    * Update the existing overlay SVG stroke colours to reflect current segment roles.
    */
@@ -266,7 +294,7 @@ const RoadMarker = (function() {
     if (!svg) return;
 
     roadSegments.forEach(seg => {
-      const el = svg.querySelector(`[data-edge-id="${seg.edge_id}"]`);
+      const el = overlayVisibleEdgeElement(svg, seg.edge_id);
       if (el) {
         el.setAttribute('stroke', roleColor(seg.role));
         if (seg.role === 'ignore') {
@@ -274,9 +302,10 @@ const RoadMarker = (function() {
         } else {
           el.setAttribute('stroke-dasharray', 'none');
         }
-        el.setAttribute('stroke-width', seg.selected ? '3' : '1.5');
+        el.setAttribute('stroke-width', seg.selected ? '2.2' : '1.5');
       }
     });
+    updateSmallOverlaySelectionHighlight(svg);
   }
 
   /**
@@ -289,17 +318,13 @@ const RoadMarker = (function() {
     if (!svg) return;
 
     roadSegments.forEach(seg => {
-      const el = svg.querySelector(`[data-edge-id="${seg.edge_id}"]`);
+      const el = overlayVisibleEdgeElement(svg, seg.edge_id);
       if (el) {
-        el.setAttribute('stroke-width', seg.selected ? '3' : '1.5');
-        // selected highlight
-        if (seg.selected) {
-          el.setAttribute('stroke', '#ffeb3b'); // yellow highlight
-        } else {
-          el.setAttribute('stroke', roleColor(seg.role));
-        }
+        el.setAttribute('stroke-width', seg.selected ? '2.2' : '1.5');
+        el.setAttribute('stroke', roleColor(seg.role));
       }
     });
+    updateSmallOverlaySelectionHighlight(svg);
   }
 
   // ── clear / reset ────────────────────────────────────────────────────────
@@ -523,16 +548,38 @@ const RoadMarker = (function() {
     updateRoadEditorToolButtons();
   }
 
+  function updateRoadEditorSelectionHighlight() {
+    const layer = document.getElementById('road-edge-layer');
+    if (!layer) return;
+    layer.querySelectorAll('.road-edge-selected-highlight').forEach(el => el.remove());
+    roadSegments.filter(seg => seg.selected).forEach(seg => {
+      const d = pathDataFromPoints(seg.points);
+      if (!d) return;
+      const highlight = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      highlight.setAttribute('class', 'road-edge-selected-highlight');
+      highlight.setAttribute('d', d);
+      highlight.setAttribute('fill', 'none');
+      highlight.setAttribute('stroke', '#ffeb3b');
+      highlight.setAttribute('stroke-width', '6');
+      highlight.setAttribute('stroke-linecap', 'round');
+      highlight.setAttribute('stroke-linejoin', 'round');
+      highlight.setAttribute('pointer-events', 'none');
+      highlight.setAttribute('vector-effect', 'non-scaling-stroke');
+      layer.insertBefore(highlight, layer.firstChild);
+    });
+  }
+
   function updateRoadEditorSegmentColors() {
     const svg = editorSvg();
     if (!svg) return;
     roadSegments.forEach(seg => {
       const visible = svg.querySelector(`.road-edge-visible[data-segment-id="${seg.segment_id}"]`);
       if (!visible) return;
-      visible.setAttribute('stroke', seg.selected ? '#ffeb3b' : roleColor(seg.role));
-      visible.setAttribute('stroke-width', seg.selected ? '3.6' : '1.8');
+      visible.setAttribute('stroke', roleColor(seg.role));
+      visible.setAttribute('stroke-width', seg.selected ? '2.6' : '1.8');
       visible.setAttribute('stroke-dasharray', seg.role === 'ignore' ? '6 4' : 'none');
     });
+    updateRoadEditorSelectionHighlight();
   }
 
   function selectRoadSegmentFromEditor(segmentId) {
@@ -711,12 +758,29 @@ const RoadMarker = (function() {
         svgEl.removeAttribute('width');
         svgEl.removeAttribute('height');
 
-        // Tag each edge path with data-edge-id for click selection
+        // Tag each edge path with data-edge-id for click selection and add
+        // transparent hit clones for the small toolbar preview.
         edges.forEach(edge => {
           const path = svgEl.querySelector(`[id="${edge.id}"]`);
           if (path) {
+            path.classList.add('road-small-edge-visible');
             path.setAttribute('data-edge-id', edge.id);
             path.style.cursor = 'pointer';
+
+            const hit = path.cloneNode(false);
+            hit.removeAttribute('id');
+            hit.removeAttribute('style');
+            hit.setAttribute('class', 'road-small-edge-hit');
+            hit.setAttribute('data-edge-id', edge.id);
+            hit.setAttribute('stroke', 'transparent');
+            hit.setAttribute('stroke-width', '5');
+            hit.setAttribute('fill', 'none');
+            hit.setAttribute('stroke-linecap', 'round');
+            hit.setAttribute('stroke-linejoin', 'round');
+            hit.setAttribute('pointer-events', 'stroke');
+            hit.setAttribute('vector-effect', 'non-scaling-stroke');
+            hit.style.cursor = 'pointer';
+            path.parentNode.insertBefore(hit, path.nextSibling);
           }
         });
       }

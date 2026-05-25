@@ -48,6 +48,30 @@ def test_phase_c_edges_have_visible_and_hit_paths_for_reliable_selection():
     assert "pointer-events:stroke" in CSS
 
 
+def test_phase_c_selected_edge_uses_yellow_highlight_without_hiding_role_colour():
+    assert "road-edge-selected-highlight" in JS
+    assert "#ffeb3b" in JS
+    assert "visible.setAttribute('stroke', roleColor(seg.role))" in JS
+    assert "updateRoadEditorSelectionHighlight" in JS
+    assert ".road-edge-selected-highlight" in CSS
+
+
+def test_small_centerline_toolbar_overlay_has_separate_5px_hit_paths():
+    assert "road-small-edge-visible" in JS
+    assert "road-small-edge-hit" in JS
+    assert "hit.setAttribute('stroke-width', '5')" in JS
+    assert "hit.setAttribute('pointer-events', 'stroke')" in JS
+    assert "overlayVisibleEdgeElement" in JS
+    assert ".road-edge-hit{fill:none;stroke:transparent;stroke-width:12" in CSS
+
+
+def test_small_centerline_toolbar_selection_highlight_does_not_hide_role_colour():
+    assert "updateSmallOverlaySelectionHighlight" in JS
+    assert "road-small-edge-selected-highlight" in JS
+    assert "el.setAttribute('stroke', roleColor(seg.role))" in JS
+    assert "el.setAttribute('stroke', seg.selected ? '#ffeb3b'" not in JS
+
+
 def test_phase_c_marking_and_reopen_state_are_supported_without_stitch_scope():
     assert "markSelectedSegment('primary')" in HTML
     assert "markSelectedSegment('secondary')" in HTML
