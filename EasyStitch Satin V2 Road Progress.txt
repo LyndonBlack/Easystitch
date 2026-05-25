@@ -1466,3 +1466,111 @@ Fix remaining Phase C.7 road segment spans where AutoTrace edges geometrically c
 
 ### Next step
 User should rebuild the centerline graph for puppy and confirm the ear/head and inner cross now split at every visible junction.
+
+
+---
+
+## 2026-05-25 09:18:46 IST - Phase C.9 backend graph topology normalization
+
+### Current objective
+Move the previous frontend C.8 topology patch into the backend graph-building pipeline. Existing visible graph nodes must become hard breakpoints on nearby/underlying edges before roadSegments are built. Do not proceed to rungs.
+
+### Files changed
+- path: /home/lyndon/AI/Easystitch/refactor/easystitch_core/road_marker.py
+- function/section changed: added `normalize_graph_topology()` plus projection/slicing helpers
+- reason for change: graph topology belongs in backend; selectable segments were still spanning through existing visible nodes
+- whether code was added, removed, or modified: added backend normalization code
+
+- path: /home/lyndon/AI/Easystitch/refactor/app.py
+- function/section changed: /api/roads/centerline now calls `tag_split_boundary_nodes()`, `normalize_graph_topology()`, then `tag_split_boundary_nodes()` again before overlay/debug SVG generation
+- reason for change: API now returns normalized node-to-node graph edges before the frontend builds roadSegments
+- whether code was added, removed, or modified: modified route wiring
+
+- path: /home/lyndon/AI/Easystitch/refactor/web/static/js/road_marker.js
+- function/section changed: removed frontend-generated intersection node insertion; road segment builder now preserves backend `source_edge_id` when present
+- reason for change: frontend should consume backend-normalized topology, not patch graph structure itself
+- whether code was added, removed, or modified: removed JS topology mutation and modified metadata handling
+
+- path: /home/lyndon/AI/Easystitch/refactor/tests/test_phase_c9_topology_normalization.py
+- function/section changed: new backend topology normalization regressions
+- reason for change: cover endpoint-to-edge snapping, manual split preservation, close-parallel rejection, and very-close different-object snapping
+- whether code was added, removed, or modified: added test file
+
+- path: /home/lyndon/AI/Easystitch/refactor/tests/test_phase_c7_atomic_segments_behavior.py
+- function/section changed: removed obsolete frontend-generated-junction expectations; added frontend-consumes-normalized-graph coverage
+- reason for change: generated topology now belongs to backend, not JS
+- whether code was added, removed, or modified: modified tests
+
+- path: /home/lyndon/AI/Easystitch/refactor/tests/test_phase_c_segment_editor_static.py
+- function/section changed: updated static source_edge_id assertion
+- reason for change: frontend now preserves backend `edge.source_edge_id || edge.id`
+- whether code was added, removed, or modified: modified test
+
+### Commands run
+- command: python3.14 -m pytest tests/test_phase_c9_topology_normalization.py -q
+- success/failure: success after implementation
+- important output/error: 4 passed
+
+- command: node --check web/static/js/road_marker.js && node --check web/static/js/state.js && python3.14 -m pytest tests/test_phase_c9_topology_normalization.py tests/test_phase_c7_atomic_segments_behavior.py -q
+- success/failure: success
+- important output/error: 8 passed
+
+- command: node --check web/static/js/road_marker.js && node --check web/static/js/state.js && python3.14 -m pytest tests -q
+- success/failure: success
+- important output/error: 38 passed
+
+### Tests performed
+- what was tested: long edge A→C with branch endpoint B close to its interior
+- input file used: synthetic graph in tests/test_phase_c9_topology_normalization.py
+- expected result: A→C split into A→B and B→C, B becomes degree-3 junction
+- actual result: pass
+- pass/fail: pass
+
+- what was tested: manual_split_boundary node close to a long edge interior
+- input file used: synthetic graph in tests/test_phase_c9_topology_normalization.py
+- expected result: long edge split at the manual boundary and node type preserved
+- actual result: pass
+- pass/fail: pass
+
+- what was tested: close parallel path rejection
+- input file used: synthetic graph with two nearby parallel edges from different source_object_ids
+- expected result: no false split just because paths are within the broad snap tolerance
+- actual result: pass
+- pass/fail: pass
+
+- what was tested: very-close different-object endpoint snapping
+- input file used: synthetic graph with branch endpoint 1px from edge interior
+- expected result: split is allowed despite different source_object_ids because the distance is very small
+- actual result: pass
+- pass/fail: pass
+
+- what was tested: frontend JS no longer creates generated topology nodes
+- input file used: tests/test_phase_c7_atomic_segments_behavior.py
+- expected result: JS consumes graph as provided and builds selectable segments from backend-normalized edges
+- actual result: pass
+- pass/fail: pass
+
+### Debug outputs created
+- mask PNG: none
+- AutoTrace SVG: none
+- overlay SVG: none
+- graph JSON: none
+- screenshots if any: none
+
+### Decisions made
+- Topology normalization now lives in backend `normalize_graph_topology()`.
+- Broad endpoint-to-edge snap tolerance defaults to 8 SVG px via `topology_snap_tolerance` setting.
+- The existing frontend `ROAD_ATOMIC_NODE_TOLERANCE = 4` remains unchanged and is not globally increased.
+- Endpoint nodes can split an edge when they share `source_object_ids` with that edge, or when projection offset is very small (strict tolerance <=2px).
+- Junction/manual_split_boundary/generated_junction nodes are allowed split points when they project onto edge interiors within tolerance.
+- Projection must land away from source/target endpoints to avoid duplicate endpoint splits.
+- After splitting, node degrees/types are recomputed; manual_split_boundary and generated_junction types are preserved.
+- Frontend C.8 generated-intersection mutation was removed; JS is now a consumer of normalized backend graph topology.
+
+### Issues / blockers
+- QA subagent review could not run due provider HTTP 429 usage limit. Direct diff review and full automated tests passed.
+- This C.9 pass normalizes existing graph nodes onto nearby edges. It does not introduce entirely new edge/edge crossing nodes where no graph node exists at all; if that remains needed later, it should also be implemented backend-side, not as a frontend patch.
+- Existing unrelated dirty files/assets remain in the working tree and are not part of this change.
+
+### Next step
+Rebuild the centerline graph in the UI and manually verify Puppy/House cases: ear/head/face spans and roof/chimney/window cross sections should select between visible nodes only, without highlighting across a junction dot.

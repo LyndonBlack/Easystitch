@@ -101,7 +101,7 @@ def test_phase_c7_atomic_segment_helper_is_wired_for_hard_node_boundaries():
     assert "function projectPointToPolyline" in JS
     assert "function slicePolylineByDistance" in JS
     assert "const ROAD_ATOMIC_NODE_TOLERANCE = 4" in JS
-    assert "source_edge_id: edge.id" in JS
+    assert "source_edge_id: edge.source_edge_id || edge.id" in JS
     assert "edge_id: atomicId" in JS
     assert "buildAtomicRoadSegmentsFromGraph(graphData)" in JS
     assert "edge.points || []" in JS

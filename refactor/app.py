@@ -26,6 +26,7 @@ from easystitch_core.road_marker import (
     clean_centerline_polylines,
     split_polylines_at_object_boundaries,
     tag_split_boundary_nodes,
+    normalize_graph_topology,
     build_centerline_graph,
     build_road_graph_overlay_svg,
 )
@@ -451,6 +452,10 @@ def create_app(initial_input: str | None, output_dir: str) -> Flask:
             )
             graph = build_centerline_graph(split_polylines, snap_distance=snap_distance)
             # Phase B.3: tag nodes that sit between different Satin objects
+            graph = tag_split_boundary_nodes(graph)
+            # Phase C.9: normalize graph topology before the frontend builds roadSegments.
+            # Existing visible nodes become hard breakpoints on nearby underlying edges.
+            graph = normalize_graph_topology(graph, snap_tolerance=float(settings.get("topology_snap_tolerance", 8.0)))
             graph = tag_split_boundary_nodes(graph)
             satin_objects = collect_satin_objects(objects, assignments)
             overlay_svg = build_road_graph_overlay_svg(svg_w_f, svg_h_f, satin_objects, graph)
