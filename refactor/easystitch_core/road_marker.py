@@ -1039,7 +1039,91 @@ def _renumber_edge_id(base_id: str, index: int, total: int) -> str:
     return f"{base_id}_n{index}"
 
 
-def normalize_graph_topology(graph: dict[str, Any], snap_tolerance: float = 8.0) -> dict[str, Any]:
+def _split_edge_at_nodes(
+    edge: dict[str, Any],
+    candidates: list[dict[str, Any]],
+    all_edges: list[dict[str, Any]],
+    node_by_id: dict[str, dict[str, Any]],
+    snap_tolerance: float,
+    strict_snap_tolerance: float,
+    endpoint_margin: float,
+    split_edges: list[dict[str, Any]],
+) -> None:
+    """Project candidate nodes onto an edge's polyline and split if found.
+
+    Appends to split_edges in-place. If no interior split is found the
+    original edge is appended unchanged.
+    """
+    points = [list(map(float, point)) for point in (edge.get("points") or [])]
+    if len(points) < 2:
+        return
+    edge_length = _polyline_length(points)
+    boundaries: list[dict[str, Any]] = [
+        {"node_id": str(edge.get("source")), "distance": 0.0},
+        {"node_id": str(edge.get("target")), "distance": edge_length},
+    ]
+
+    for node in candidates:
+        node_id = str(node.get("id", ""))
+        if not node_id or node_id == edge.get("source") or node_id == edge.get("target"):
+            continue
+        node_point = [float(node.get("x", 0.0)), float(node.get("y", 0.0))]
+        projection = _project_point_to_polyline(node_point, points)
+        if projection is None:
+            continue
+        if float(projection["offset"]) > float(snap_tolerance):
+            continue
+        distance_along = float(projection["distance"])
+        if distance_along <= endpoint_margin or edge_length - distance_along <= endpoint_margin:
+            continue
+        node_dir = _node_edge_direction(node_id, all_edges)
+        target_dir = _segment_direction_at_distance(points, distance_along)
+        if not _node_allowed_to_split_edge(
+            node, edge, all_edges, float(projection["offset"]),
+            strict_snap_tolerance, node_dir, target_dir,
+        ):
+            continue
+        boundaries.append({"node_id": node_id, "distance": distance_along})
+
+    boundaries.sort(key=lambda item: float(item["distance"]))
+    deduped: list[dict[str, Any]] = []
+    for boundary in boundaries:
+        previous = deduped[-1] if deduped else None
+        if previous and abs(float(previous["distance"]) - float(boundary["distance"])) <= 1e-6:
+            if boundary["node_id"] not in {edge.get("source"), edge.get("target")}:
+                previous["node_id"] = boundary["node_id"]
+            continue
+        deduped.append(boundary)
+
+    if len(deduped) <= 2:
+        preserved = dict(edge)
+        preserved["points"] = points
+        preserved["length"] = _polyline_length(points)
+        split_edges.append(preserved)
+        return
+
+    source_edge_id = str(edge.get("source_edge_id") or edge.get("id"))
+    child_count = len(deduped) - 1
+    for idx in range(1, len(deduped)):
+        start = deduped[idx - 1]
+        end = deduped[idx]
+        if float(end["distance"]) - float(start["distance"]) <= 1e-9:
+            continue
+        child_points = _slice_polyline_by_distance(points, float(start["distance"]), float(end["distance"]))
+        if len(child_points) < 2:
+            continue
+        child = dict(edge)
+        child["id"] = _renumber_edge_id(str(edge.get("id")), idx, child_count)
+        child["source_edge_id"] = source_edge_id
+        child["source"] = str(start["node_id"])
+        child["target"] = str(end["node_id"])
+        child["points"] = child_points
+        child["length"] = _polyline_length(child_points)
+        child["source_object_ids"] = list(edge.get("source_object_ids") or [])
+        split_edges.append(child)
+
+
+def normalize_graph_topology(graph: dict[str, Any], snap_tolerance: float = 12.0) -> dict[str, Any]:
     """Split graph edges at nearby graph nodes so visible nodes become hard boundaries.
 
     This is topology normalization: if a node lies near the interior of another
@@ -1060,85 +1144,51 @@ def normalize_graph_topology(graph: dict[str, Any], snap_tolerance: float = 8.0)
     edges = list(graph.get("edges", []) or [])
 
     node_by_id = {str(node.get("id")): node for node in nodes if node.get("id") is not None}
+    original_node_types: dict[str, str] = {
+        str(node.get("id")): str(node.get("type") or "")
+        for node in nodes if node.get("id")
+    }
     strict_snap_tolerance = min(2.0, float(snap_tolerance) / 4.0)
     endpoint_margin = max(1.0, min(4.0, float(snap_tolerance) / 2.0))
     split_edges: list[dict[str, Any]] = []
 
     for edge in edges:
-        points = [list(map(float, point)) for point in (edge.get("points") or [])]
-        if len(points) < 2:
-            continue
-        edge_length = _polyline_length(points)
-        boundaries: list[dict[str, Any]] = [
-            {"node_id": str(edge.get("source")), "distance": 0.0},
-            {"node_id": str(edge.get("target")), "distance": edge_length},
-        ]
+        _split_edge_at_nodes(edge, nodes, edges, node_by_id, snap_tolerance,
+                             strict_snap_tolerance, endpoint_margin, split_edges)
 
-        for node in nodes:
-            node_id = str(node.get("id", ""))
-            if not node_id or node_id == edge.get("source") or node_id == edge.get("target"):
-                continue
-            node_point = [float(node.get("x", 0.0)), float(node.get("y", 0.0))]
-            projection = _project_point_to_polyline(node_point, points)
-            if projection is None:
-                continue
-            if float(projection["offset"]) > float(snap_tolerance):
-                continue
-            distance_along = float(projection["distance"])
-            if distance_along <= endpoint_margin or edge_length - distance_along <= endpoint_margin:
-                continue
-            node_dir = _node_edge_direction(node_id, edges)
-            target_dir = _segment_direction_at_distance(points, distance_along)
-            if not _node_allowed_to_split_edge(
-                node, edge, edges, float(projection["offset"]),
-                strict_snap_tolerance, node_dir, target_dir,
-            ):
-                continue
-            boundaries.append({"node_id": node_id, "distance": distance_along})
-
-        boundaries.sort(key=lambda item: float(item["distance"]))
-        deduped: list[dict[str, Any]] = []
-        for boundary in boundaries:
-            previous = deduped[-1] if deduped else None
-            if previous and abs(float(previous["distance"]) - float(boundary["distance"])) <= 1e-6:
-                # Prefer non-endpoint split nodes over the synthetic edge boundary if close.
-                if boundary["node_id"] not in {edge.get("source"), edge.get("target")}:
-                    previous["node_id"] = boundary["node_id"]
-                continue
-            deduped.append(boundary)
-
-        if len(deduped) <= 2:
-            preserved = dict(edge)
-            preserved["points"] = points
-            preserved["length"] = _polyline_length(points)
-            split_edges.append(preserved)
-            continue
-
-        source_edge_id = str(edge.get("source_edge_id") or edge.get("id"))
-        child_count = len(deduped) - 1
-        for idx in range(1, len(deduped)):
-            start = deduped[idx - 1]
-            end = deduped[idx]
-            if float(end["distance"]) - float(start["distance"]) <= 1e-9:
-                continue
-            child_points = _slice_polyline_by_distance(points, float(start["distance"]), float(end["distance"]))
-            if len(child_points) < 2:
-                continue
-            child = dict(edge)
-            child["id"] = _renumber_edge_id(str(edge.get("id")), idx, child_count)
-            child["source_edge_id"] = source_edge_id
-            child["source"] = str(start["node_id"])
-            child["target"] = str(end["node_id"])
-            child["points"] = child_points
-            child["length"] = _polyline_length(child_points)
-            child["source_object_ids"] = list(edge.get("source_object_ids") or [])
-            split_edges.append(child)
-
+    # Compute degrees and identify promoted junction nodes
     degrees: dict[str, int] = {node_id: 0 for node_id in node_by_id}
     for edge in split_edges:
         for node_id in (str(edge.get("source", "")), str(edge.get("target", ""))):
             if node_id:
                 degrees[node_id] = degrees.get(node_id, 0) + 1
+
+    promoted_junction_ids: set[str] = set()
+    for node in nodes:
+        nid = str(node.get("id", ""))
+        orig_type = original_node_types.get(nid, "")
+        new_degree = degrees.get(nid, 0)
+        if new_degree >= 3 and orig_type in {"endpoint", "pass_through"}:
+            promoted_junction_ids.add(nid)
+
+    # SECOND PASS: promoted junctions in newly computed degrees re-check
+    # unsplit edges at double tolerance. These are genuine intersections that
+    # barely missed the first pass.
+    if promoted_junction_ids:
+        junction_tolerance = float(snap_tolerance) * 2.0
+        for edge in edges:
+            eid = str(edge.get("id"))
+            was_split = any(
+                e.get("id") != eid and (str(e.get("source_edge_id") or e.get("id")) == eid)
+                for e in split_edges
+            )
+            if was_split:
+                continue
+            # Build the promoted-junction-only node subset for this pass
+            promo_nodes = [n for n in nodes if n.get("id") in promoted_junction_ids]
+            _split_edge_at_nodes(edge, promo_nodes, edges, node_by_id,
+                                 junction_tolerance, strict_snap_tolerance,
+                                 endpoint_margin, split_edges)
 
     normalized_nodes: list[dict[str, Any]] = []
     for node in nodes:
