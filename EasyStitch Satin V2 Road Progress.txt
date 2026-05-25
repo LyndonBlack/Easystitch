@@ -1349,3 +1349,61 @@ Two-stage post-processing pipeline added after centerline graph creation:
 
 ### Next step
 Await user review and testing of Phase B.3.
+
+---
+
+## 2026-05-25 06:56:20 IST - Phase C Segment Editor overlay
+
+### Current objective
+Implement Phase C only: large Segment Editor overlay for existing road segments, with stable coordinate alignment, zoom/pan/reset, reliable segment selection, role marking, and close/reopen state preservation. No rungs or Satin V2 stitches.
+
+### Files changed
+- path: /home/lyndon/AI/Easystitch/refactor/web/templates/index.html
+  - Added modal shell `#road-segment-editor-modal` with shared `#road-editor-svg` and layer groups.
+  - Rewired Open Segment Editor button to `RoadMarker.openSegmentEditor()`.
+- path: /home/lyndon/AI/Easystitch/refactor/web/static/js/state.js
+  - Added `roadGraphData`, `roadEditorViewBox`, and `roadEditorMode` state.
+- path: /home/lyndon/AI/Easystitch/refactor/web/static/js/road_marker.js
+  - Added Phase C editor rendering, background Satin outlines, transparent hit paths, viewBox zoom/pan/reset, selection details, and overlay marking sync.
+- path: /home/lyndon/AI/Easystitch/refactor/web/static/css/app.css
+  - Added modal/editor layout and SVG layer/hit-path styling.
+- path: /home/lyndon/AI/Easystitch/refactor/tests/test_phase_c_segment_editor_static.py
+  - Added static regression tests for Phase C contract.
+
+### Commands run
+- command: python3.14 -m pytest tests/test_phase_c_segment_editor_static.py -q
+  - success/failure: failed before implementation as expected, then passed after implementation.
+- command: python3.14 -m pytest tests -q
+  - success/failure: success
+  - important output/error: 23 passed
+- command: node --check web/static/js/road_marker.js && node --check web/static/js/state.js
+  - success/failure: success
+- command: delegate_task QA review
+  - success/failure: success
+  - important output/error: no blocking issues; noted minor robustness concern, fixed with getScreenCTM guard.
+
+### Tests performed
+- Phase C static regression test: verifies modal shell, shared SVG viewBox, background outlines, hit paths, marking controls, and no stitch/rung scope creep. Pass.
+- Full pytest suite. Pass: 23/23.
+- JS syntax check for road_marker.js and state.js. Pass.
+
+### Debug outputs created
+- mask PNG: none
+- AutoTrace SVG: none
+- overlay SVG: none
+- graph JSON: none
+- screenshots if any: none
+
+### Decisions made
+- Editor uses one SVG with shared viewBox for background outlines, edges, nodes, and highlights.
+- Zoom/pan use SVG viewBox manipulation, not CSS transforms.
+- Background layer renders current Satin-assigned `structureObjects` as faint outlines only.
+- Edges render as separate transparent hit paths plus visible paths for reliable click selection.
+- Role changes apply immediately to shared `roadSegments` state; Apply is a sync/toast action, not a staging mechanism.
+
+### Issues / blockers
+- No Phase C blockers found.
+- Existing unrelated dirty files/assets remain in the working tree and were not included in Phase C scope.
+
+### Next step
+Manual browser validation on Puppy/HappySun/House for visual alignment and click targeting, then continue only if overlay behaviour is stable.

@@ -209,12 +209,16 @@ const RoadMarker = (function() {
     roadSelectedSegmentId = segmentId;
     roadSegments.forEach(s => { s.selected = (s.segment_id === segmentId); });
     updateRoadSegmentStats();
+    updateRoadEditorSegmentColors();
+    updateRoadEditorSelectedDetails();
   }
 
   function deselectRoadSegment() {
     roadSelectedSegmentId = null;
     roadSegments.forEach(s => { s.selected = false; });
     updateRoadSegmentStats();
+    updateRoadEditorSegmentColors();
+    updateRoadEditorSelectedDetails();
   }
 
   // ── marking / role assignment (Phase B.2) ────────────────────────────────
@@ -230,6 +234,8 @@ const RoadMarker = (function() {
     seg.priority = (role === 'primary') ? 0 : (role === 'secondary') ? 1 : null;
     updateRoadSegmentStats();
     updateOverlaySegmentColors();
+    updateRoadEditorSegmentColors();
+    updateRoadEditorSelectedDetails();
     const label = role.charAt(0).toUpperCase() + role.slice(1);
     roadMaskToast(`Segment ${seg.segment_id} marked as ${label}`, 2000);
   }
@@ -245,6 +251,8 @@ const RoadMarker = (function() {
     seg.priority = null;
     updateRoadSegmentStats();
     updateOverlaySegmentColors();
+    updateRoadEditorSegmentColors();
+    updateRoadEditorSelectedDetails();
     roadMaskToast(`Segment ${seg.segment_id} cleared to Unmarked`, 2000);
   }
 
@@ -408,6 +416,258 @@ const RoadMarker = (function() {
     }
   }
 
+  // ── Phase C: large Segment Editor overlay ────────────────────────────────
+
+  function editorSvg() {
+    return document.getElementById('road-editor-svg');
+  }
+
+  function pathDataFromPoints(points) {
+    if (!points || !points.length) return '';
+    return points.map((p, idx) => `${idx === 0 ? 'M' : 'L'} ${Number(p[0]).toFixed(3)} ${Number(p[1]).toFixed(3)}`).join(' ');
+  }
+
+  function segmentById(segmentId) {
+    return roadSegments.find(s => s.segment_id === segmentId) || null;
+  }
+
+  function setRoadEditorViewBox(vb) {
+    const svg = editorSvg();
+    if (!svg || !vb) return;
+    roadEditorViewBox = {
+      x: Number(vb.x),
+      y: Number(vb.y),
+      w: Math.max(1, Number(vb.w)),
+      h: Math.max(1, Number(vb.h)),
+    };
+    svg.setAttribute('viewBox', `${roadEditorViewBox.x} ${roadEditorViewBox.y} ${roadEditorViewBox.w} ${roadEditorViewBox.h}`);
+  }
+
+  function resetRoadEditorView() {
+    setRoadEditorViewBox({x: 0, y: 0, w: structureSvgW || 500, h: structureSvgH || 500});
+  }
+
+  function zoomRoadEditor(factor, center) {
+    const svg = editorSvg();
+    if (!svg) return;
+    if (!roadEditorViewBox) resetRoadEditorView();
+    const vb = roadEditorViewBox;
+    const c = center || {x: vb.x + vb.w / 2, y: vb.y + vb.h / 2};
+    const nextW = Math.max(5, vb.w * factor);
+    const nextH = Math.max(5, vb.h * factor);
+    setRoadEditorViewBox({
+      x: c.x - (c.x - vb.x) * (nextW / vb.w),
+      y: c.y - (c.y - vb.y) * (nextH / vb.h),
+      w: nextW,
+      h: nextH,
+    });
+  }
+
+  function roadEditorSvgPoint(evt) {
+    const svg = editorSvg();
+    if (!svg) return null;
+    const matrix = svg.getScreenCTM();
+    if (!matrix) return null;
+    const pt = svg.createSVGPoint();
+    pt.x = evt.clientX;
+    pt.y = evt.clientY;
+    const p = pt.matrixTransform(matrix.inverse());
+    return {x: p.x, y: p.y};
+  }
+
+  function clearLayer(id) {
+    const el = document.getElementById(id);
+    if (el) el.innerHTML = '';
+    return el;
+  }
+
+  function renderRoadEditorBackground() {
+    const layer = clearLayer('road-bg-layer');
+    if (!layer || typeof structureObjects === 'undefined') return;
+    const objs = [...structureObjects].sort((a, b) => (a.order || 0) - (b.order || 0));
+    objs.forEach(obj => {
+      const assigned = (typeof stitchAssignments !== 'undefined' && stitchAssignments[obj.id])
+        ? stitchAssignments[obj.id]
+        : ((typeof defaultStitchType === 'function') ? defaultStitchType(obj) : 'fill');
+      if (String(assigned).toLowerCase() !== 'satin') return;
+      const p = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      p.setAttribute('class', 'road-bg-path');
+      p.setAttribute('d', obj.d || '');
+      if (obj.tx || obj.ty) p.setAttribute('transform', `translate(${obj.tx || 0},${obj.ty || 0})`);
+      layer.appendChild(p);
+    });
+  }
+
+  function updateRoadEditorSelectedDetails() {
+    const details = document.getElementById('road-editor-selected-details');
+    if (!details) return;
+    const seg = segmentById(roadSelectedSegmentId);
+    if (!seg) {
+      details.textContent = roadSegmentsBuilt ? 'No segment selected.' : 'Build the centerline graph before opening the editor.';
+      return;
+    }
+    const roleNames = {unmarked: 'Unmarked', primary: 'Primary', secondary: 'Secondary', ignore: 'Ignore'};
+    details.innerHTML = `Selected: <b>${seg.segment_id}</b> · length <b>${seg.length.toFixed(1)} px</b> · role <b style="color:${roleColor(seg.role)}">${roleNames[seg.role] || seg.role}</b> · edge <b>${seg.edge_id}</b> · nodes <b>${seg.source_node || '?'} → ${seg.target_node || '?'}</b>`;
+  }
+
+  function updateRoadEditorToolButtons() {
+    document.querySelectorAll('.road-editor-tool-btn').forEach(btn => btn.classList.remove('active'));
+    const active = document.getElementById(roadEditorMode === 'pan' ? 'road-editor-pan-btn' : 'road-editor-select-btn');
+    if (active) active.classList.add('active');
+    const svg = editorSvg();
+    if (svg) svg.style.cursor = roadEditorMode === 'pan' ? 'grab' : 'default';
+  }
+
+  function setSegmentEditorMode(mode) {
+    roadEditorMode = (mode === 'pan') ? 'pan' : 'select';
+    updateRoadEditorToolButtons();
+  }
+
+  function updateRoadEditorSegmentColors() {
+    const svg = editorSvg();
+    if (!svg) return;
+    roadSegments.forEach(seg => {
+      const visible = svg.querySelector(`.road-edge-visible[data-segment-id="${seg.segment_id}"]`);
+      if (!visible) return;
+      visible.setAttribute('stroke', seg.selected ? '#ffeb3b' : roleColor(seg.role));
+      visible.setAttribute('stroke-width', seg.selected ? '3.6' : '1.8');
+      visible.setAttribute('stroke-dasharray', seg.role === 'ignore' ? '6 4' : 'none');
+    });
+  }
+
+  function selectRoadSegmentFromEditor(segmentId) {
+    if (!segmentId) return;
+    selectRoadSegment(segmentId);
+  }
+
+  function renderRoadEditorEdges() {
+    const layer = clearLayer('road-edge-layer');
+    if (!layer) return;
+    roadSegments.forEach(seg => {
+      const d = pathDataFromPoints(seg.points);
+      if (!d) return;
+      const hit = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      hit.setAttribute('class', 'road-edge-hit');
+      hit.setAttribute('data-segment-id', seg.segment_id);
+      hit.setAttribute('data-edge-id', seg.edge_id);
+      hit.setAttribute('d', d);
+      hit.addEventListener('click', ev => {
+        if (roadEditorMode !== 'select') return;
+        ev.stopPropagation();
+        selectRoadSegmentFromEditor(seg.segment_id);
+      });
+      const visible = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      visible.setAttribute('class', 'road-edge-visible');
+      visible.setAttribute('data-segment-id', seg.segment_id);
+      visible.setAttribute('data-edge-id', seg.edge_id);
+      visible.setAttribute('d', d);
+      layer.appendChild(hit);
+      layer.appendChild(visible);
+    });
+  }
+
+  function renderRoadEditorNodes() {
+    const layer = clearLayer('road-node-layer');
+    if (!layer) return;
+    const nodes = (roadGraphData && roadGraphData.nodes) ? roadGraphData.nodes : [];
+    nodes.forEach(node => {
+      const c = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      c.setAttribute('class', 'road-node');
+      c.setAttribute('cx', String(node.x));
+      c.setAttribute('cy', String(node.y));
+      c.setAttribute('r', node.type === 'manual_split_boundary' ? '3.8' : (node.type === 'junction' ? '3.2' : '2.4'));
+      c.setAttribute('fill', node.type === 'manual_split_boundary' ? '#ff00ff' : (node.type === 'junction' ? '#ff9800' : '#2ecc71'));
+      c.setAttribute('stroke', '#fff');
+      c.setAttribute('stroke-width', '0.8');
+      layer.appendChild(c);
+    });
+  }
+
+  function renderSegmentEditor() {
+    const svg = editorSvg();
+    if (!svg) return;
+    svg.setAttribute('viewBox', `0 0 ${structureSvgW || 500} ${structureSvgH || 500}`);
+    if (!roadEditorViewBox) resetRoadEditorView();
+    else setRoadEditorViewBox(roadEditorViewBox);
+    renderRoadEditorBackground();
+    renderRoadEditorEdges();
+    renderRoadEditorNodes();
+    clearLayer('road-highlight-layer');
+    updateRoadEditorSegmentColors();
+    updateRoadEditorSelectedDetails();
+    updateRoadEditorToolButtons();
+  }
+
+  function installRoadEditorPanHandlers() {
+    const svg = editorSvg();
+    if (!svg || svg._roadEditorHandlersInstalled) return;
+    svg._roadEditorHandlersInstalled = true;
+    let dragging = false;
+    let last = null;
+
+    svg.addEventListener('wheel', ev => {
+      ev.preventDefault();
+      const p = roadEditorSvgPoint(ev);
+      zoomRoadEditor(ev.deltaY < 0 ? 0.88 : 1.14, p);
+    }, {passive: false});
+
+    svg.addEventListener('mousedown', ev => {
+      if (roadEditorMode !== 'pan' && ev.button !== 1) return;
+      ev.preventDefault();
+      dragging = true;
+      last = roadEditorSvgPoint(ev);
+      svg.style.cursor = 'grabbing';
+    });
+
+    window.addEventListener('mousemove', ev => {
+      if (!dragging || !last || !roadEditorViewBox) return;
+      const now = roadEditorSvgPoint(ev);
+      if (!now) return;
+      setRoadEditorViewBox({
+        x: roadEditorViewBox.x - (now.x - last.x),
+        y: roadEditorViewBox.y - (now.y - last.y),
+        w: roadEditorViewBox.w,
+        h: roadEditorViewBox.h,
+      });
+      last = roadEditorSvgPoint(ev);
+    });
+
+    window.addEventListener('mouseup', () => {
+      if (!dragging) return;
+      dragging = false;
+      last = null;
+      updateRoadEditorToolButtons();
+    });
+  }
+
+  function openSegmentEditor() {
+    if (!roadSegmentsBuilt || !roadSegments.length) {
+      roadMaskToast('Build the centerline graph before opening the segment editor.', 3200);
+      return;
+    }
+    const modal = document.getElementById('road-segment-editor-modal');
+    if (!modal) return;
+    modal.classList.add('open');
+    modal.setAttribute('aria-hidden', 'false');
+    if (!roadEditorViewBox) resetRoadEditorView();
+    installRoadEditorPanHandlers();
+    renderSegmentEditor();
+  }
+
+  function closeSegmentEditor() {
+    const modal = document.getElementById('road-segment-editor-modal');
+    if (!modal) return;
+    modal.classList.remove('open');
+    modal.setAttribute('aria-hidden', 'true');
+  }
+
+  function applySegmentEditor() {
+    updateRoadSegmentStats();
+    updateOverlaySegmentColors();
+    updateRoadEditorSegmentColors();
+    roadMaskToast('Segment editor marks applied to Pane 3 state.', 1800);
+  }
+
   // ── render: centerline graph + overlay + segments (Phase A + B) ─────────
 
   function renderCenterlineGraph(data) {
@@ -424,6 +684,8 @@ const RoadMarker = (function() {
 
     const s = data.stats || {};
     const graph = data.graph || {};
+    roadGraphData = graph;
+    roadEditorViewBox = null;
     const nodes = graph.nodes || [];
     const edges = graph.edges || [];
     const junctionCount = nodes.filter(n => n.type === 'junction').length;
@@ -543,6 +805,9 @@ const RoadMarker = (function() {
     if (overlay) overlay.innerHTML = '<span style="color:#555">Road graph overlay will appear here.</span>';
     const segStats = document.getElementById('road-segment-stats');
     if (segStats) segStats.innerHTML = 'No road segments built yet.';
+    roadGraphData = null;
+    roadEditorViewBox = null;
+    closeSegmentEditor();
     // Disable action buttons
     document.querySelectorAll('.road-seg-action-btn').forEach(b => b.disabled = true);
     clearAllSegments();
@@ -569,5 +834,16 @@ const RoadMarker = (function() {
     exportRoadJson,
     updateOverlaySegmentColors,
     updateSegmentSelectionUI,
+
+    // Phase C — large road segment editor overlay
+    openSegmentEditor,
+    closeSegmentEditor,
+    renderSegmentEditor,
+    setSegmentEditorMode,
+    setRoadEditorViewBox,
+    resetRoadEditorView,
+    zoomRoadEditor,
+    applySegmentEditor,
+    selectRoadSegmentFromEditor,
   };
 })();

@@ -298,7 +298,7 @@
           </div>
 
           <div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:8px">
-            <button class="btn road-seg-action-btn" disabled onclick="roadMaskToast('Segment Editor coming in Phase C.', 2500)" style="font-size:.75rem">Open Segment Editor</button>
+            <button class="btn road-seg-action-btn" disabled onclick="RoadMarker.openSegmentEditor()" style="font-size:.75rem">Open Segment Editor</button>
             <button class="btn road-seg-action-btn" disabled onclick="RoadMarker.exportRoadJson()" style="font-size:.75rem">Export Road JSON</button>
             <button class="btn road-seg-action-btn" disabled onclick="if(confirm('Clear all road segments?')){RoadMarker.clearAllSegments();RoadMarker.updateRoadSegmentStats();document.querySelectorAll('.road-seg-action-btn').forEach(b=>b.disabled=true);}" style="font-size:.75rem">Clear Road Segments</button>
           </div>
@@ -589,6 +589,43 @@
   </section>
 </div>
 <div class="toast" id="toast"></div>
+
+<div class="road-editor-modal" id="road-segment-editor-modal" aria-hidden="true">
+  <div class="road-editor-dialog">
+    <div class="road-editor-header">
+      <div>
+        <div class="road-editor-title">Satin Road Segment Editor</div>
+        <div class="road-editor-subtitle">Phase C — stable selection, marking, zoom and pan only</div>
+      </div>
+      <button class="btn" onclick="RoadMarker.closeSegmentEditor()">Close</button>
+    </div>
+    <div class="road-editor-toolbar">
+      <button class="btn road-editor-tool-btn" id="road-editor-select-btn" onclick="RoadMarker.setSegmentEditorMode('select')">Select</button>
+      <button class="btn road-editor-tool-btn" id="road-editor-pan-btn" onclick="RoadMarker.setSegmentEditorMode('pan')">Pan</button>
+      <button class="btn" onclick="RoadMarker.resetRoadEditorView()">Zoom Fit</button>
+      <button class="btn" onclick="RoadMarker.zoomRoadEditor(0.8)">Zoom +</button>
+      <button class="btn" onclick="RoadMarker.zoomRoadEditor(1.25)">Zoom -</button>
+      <button class="btn" onclick="RoadMarker.resetRoadEditorView()">Reset View</button>
+      <span class="road-editor-divider"></span>
+      <button class="btn" onclick="RoadMarker.markSelectedSegment('primary')" style="border-color:#4a9eff;color:#4a9eff">Primary</button>
+      <button class="btn" onclick="RoadMarker.markSelectedSegment('secondary')" style="border-color:#4caf50;color:#4caf50">Secondary</button>
+      <button class="btn" onclick="RoadMarker.markSelectedSegment('ignore')" style="border-color:#888;color:#888">Ignore</button>
+      <button class="btn" onclick="RoadMarker.clearSelectedSegmentMark()">Clear</button>
+      <span class="road-editor-divider"></span>
+      <button class="btn" onclick="RoadMarker.exportRoadJson()">Export JSON</button>
+      <button class="btn primary" onclick="RoadMarker.applySegmentEditor()">Apply</button>
+    </div>
+    <div id="road-editor-viewport" class="road-editor-viewport">
+      <svg id="road-editor-svg" viewBox="0 0 500 500" preserveAspectRatio="xMidYMid meet">
+        <g id="road-bg-layer"></g>
+        <g id="road-edge-layer"></g>
+        <g id="road-node-layer"></g>
+        <g id="road-highlight-layer"></g>
+      </svg>
+    </div>
+    <div class="road-editor-footer" id="road-editor-selected-details">No segment selected.</div>
+  </div>
+</div>
 
 <script src="/static/js/state.js"></script>
 <script src="/static/js/tooltips.js"></script>

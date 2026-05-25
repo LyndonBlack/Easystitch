@@ -131,3 +131,24 @@ input[type=range]{accent-color:#e94560}
 .stitch-order-item:hover{background:#16213e}
 .stitch-order-item.dragging{opacity:.5;background:#0f3460}
 .stitch-order-item .so-priority{width:10px;height:10px;border-radius:50%;flex-shrink:0}
+
+/* Phase C road segment editor */
+.road-editor-modal{position:fixed;inset:0;z-index:5000;background:rgba(5,8,18,.76);display:none;align-items:center;justify-content:center;padding:5vh 5vw}
+.road-editor-modal.open{display:flex}
+.road-editor-dialog{width:90vw;height:90vh;background:#101827;border:1px solid #36517d;border-radius:12px;box-shadow:0 24px 80px rgba(0,0,0,.62);display:flex;flex-direction:column;overflow:hidden}
+.road-editor-header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 14px;background:#16213e;border-bottom:1px solid #0f3460}
+.road-editor-title{font-size:.95rem;font-weight:800;color:#f1f3fa}
+.road-editor-subtitle{font-size:.72rem;color:#8f96b3;margin-top:2px}
+.road-editor-toolbar{display:flex;gap:7px;flex-wrap:wrap;align-items:center;padding:10px 12px;background:#121a30;border-bottom:1px solid #0f3460;pointer-events:auto}
+.road-editor-toolbar .btn{font-size:.72rem;padding:7px 9px}
+.road-editor-tool-btn.active{background:#0f3460;border-color:#e94560;color:#fff;box-shadow:0 0 8px rgba(233,69,96,.28)}
+.road-editor-divider{width:1px;height:24px;background:#30476d;margin:0 3px}
+.road-editor-viewport{flex:1;min-height:0;background:#f7f7fb;overflow:hidden;position:relative}
+#road-editor-svg{width:100%;height:100%;display:block;background:#f7f7fb;touch-action:none}
+#road-bg-layer,.road-bg-layer,.road-bg-path{pointer-events: none}
+#road-node-layer{pointer-events:none}
+.road-bg-path{fill:none;stroke:#283548;stroke-width:1;stroke-opacity:.25;vector-effect:non-scaling-stroke}
+.road-edge-visible{fill:none;stroke:#00bcd4;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;pointer-events:none;vector-effect:non-scaling-stroke}
+.road-edge-hit{fill:none;stroke:transparent;stroke-width:12;stroke-linecap:round;stroke-linejoin:round;pointer-events:stroke;cursor:pointer}
+.road-node{pointer-events:none;vector-effect:non-scaling-stroke}
+.road-editor-footer{padding:9px 12px;background:#0f1628;border-top:1px solid #0f3460;font-size:.76rem;color:#cbd3e9;min-height:36px}

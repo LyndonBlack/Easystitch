@@ -46,3 +46,6 @@ let traceAutoRunOnce = false;
 let roadSegments = [];            // Array of road segment objects
 let roadSelectedSegmentId = null; // Currently selected segment ID (string or null)
 let roadSegmentsBuilt = false;    // True after centerline graph converted to segments
+let roadGraphData = null;         // Last backend centerline graph used by the segment editor
+let roadEditorViewBox = null;     // Current Phase C editor SVG viewBox {x, y, w, h}
+let roadEditorMode = 'select';    // 'select' | 'pan'
