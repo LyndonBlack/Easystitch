@@ -1055,10 +1055,10 @@ def _node_allowed_to_split_edge(
     target_edge_direction: list[float] | None = None,
 ) -> bool:
     node_type = str(node.get("type") or "")
-    if node_type not in {"endpoint", "junction", "manual_split_boundary", "generated_junction", "pass_through"}:
+    if node_type not in {"endpoint", "junction", "manual_split_boundary", "generated_junction", "pass_through", "self_intersection", "self_near_junction"}:
         return False
     # Always split at junctions, boundaries, or generated intersections
-    if node_type in {"junction", "manual_split_boundary", "generated_junction"}:
+    if node_type in {"junction", "manual_split_boundary", "generated_junction", "self_intersection", "self_near_junction"}:
         return True
 
     # For endpoints and pass_through: check source object overlap first
@@ -1271,6 +1271,220 @@ def normalize_graph_topology(graph: dict[str, Any], snap_tolerance: float = 12.0
     return {"nodes": normalized_nodes, "edges": split_edges}
 
 
+def _walk_distances(points: list[list[float]]) -> list[float]:
+    """Cumulative distance from polyline start for each vertex."""
+    dists = [0.0]
+    walked = 0.0
+    for a, b in zip(points, points[1:]):
+        walked += _point_distance(a, b)
+        dists.append(walked)
+    return dists
+
+
+def _segment_min_distance(
+    a0: list[float], a1: list[float],
+    b0: list[float], b1: list[float],
+) -> tuple[float, list[float], list[float]]:
+    """Minimum distance between two line segments.
+
+    Returns (distance, closest_point_on_a, closest_point_on_b).
+    """
+    # True crossing
+    hit = _segment_intersection(a0, a1, b0, b1)
+    if hit is not None:
+        return (0.0, hit, hit)
+
+    # No intersection: check endpoints against the other segment
+    best = (float("inf"), a0, b0)
+
+    for pa, pb_name in [(a0, b0), (a0, b1), (a1, b0), (a1, b1)]:
+        proj = _project_point_to_polyline(pa, [b0, b1])
+        if proj and proj["offset"] < best[0]:
+            best = (proj["offset"], list(pa), list(proj["point"]))
+
+    for pb in [b0, b1]:
+        proj = _project_point_to_polyline(pb, [a0, a1])
+        if proj and proj["offset"] < best[0]:
+            best = (proj["offset"], list(proj["point"]), list(pb))
+
+    return best
+
+
+def split_self_near_intersections(
+    graph: dict[str, Any],
+    snap_tolerance: float = 4.0,
+    segment_separation: float = 12.0,
+) -> dict[str, Any]:
+    """Split edges where a non-adjacent segment of the same edge crosses or
+    passes near another part of itself.
+
+    Detects:
+    1. True self-crossings (figure-eight, loop crossing itself).
+    2. Near-contacts where one part of an edge comes close to a different
+       non-adjacent part of the same edge (chimney wrap path corner).
+    3. Endpoint approaching another part of the same edge.
+
+    New nodes are typed ``self_intersection`` (true crossing) or
+    ``self_near_junction`` (near-contact).
+    """
+    nodes = list(graph.get("nodes", []) or [])
+    edges = list(graph.get("edges", []) or [])
+    if not edges:
+        return graph
+
+    node_by_id: dict[str, dict[str, Any]] = {}
+    for node in nodes:
+        nid = node.get("id")
+        if nid:
+            node_by_id[str(nid)] = node
+
+    existing_node_ids: set[str] = set(node_by_id)
+    added_nodes: list[dict[str, Any]] = []
+    split_points: dict[str, list[tuple[str, float, float, float, float]]] = {}
+    # ^ edge_id -> [(node_id, distance_along, x, y, is_intersection)]
+
+    def _make_node_id() -> str:
+        counter = 1
+        while f"self_junction_{counter}" in existing_node_ids:
+            counter += 1
+        nid = f"self_junction_{counter}"
+        existing_node_ids.add(nid)
+        return nid
+
+    for edge in edges:
+        points = [list(map(float, p)) for p in (edge.get("points") or [])]
+        if len(points) < 4:  # need at least 3 segments for a self-contact
+            continue
+        eid = str(edge.get("id"))
+        dists = _walk_distances(points)
+        total_length = dists[-1]
+        if total_length <= segment_separation:
+            continue
+        endpoints: set[str] = {str(edge.get("source")), str(edge.get("target"))}
+        seg_starts = list(range(len(points) - 1))
+
+        # Collect near-contacts between non-adjacent segments
+        for i in range(len(seg_starts)):
+            for j in range(i + 1, len(seg_starts)):
+                # Minimum distance along polyline between these segments
+                gap = dists[j] - dists[i + 1]
+                if gap < segment_separation:
+                    continue
+
+                # Skip if segments share a vertex (loop closure or natural corner)
+                if _point_distance(points[i + 1], points[j]) <= 1e-9 or \
+                   _point_distance(points[i], points[j + 1]) <= 1e-9:
+                    continue
+
+                a0, a1 = points[i], points[i + 1]
+                b0, b1 = points[j], points[j + 1]
+                seg_dist, close_a, _ = _segment_min_distance(a0, a1, b0, b1)
+
+                if seg_dist > snap_tolerance:
+                    continue
+
+                # Found a self-contact
+                dist_along = dists[i] + _point_distance(points[i], close_a)
+                is_crossing = seg_dist < 1e-9
+                node_type = "self_intersection" if is_crossing else "self_near_junction"
+                node_id = _make_node_id()
+
+                new_node = {
+                    "id": node_id,
+                    "x": round(close_a[0], 6),
+                    "y": round(close_a[1], 6),
+                    "type": node_type,
+                    "degree": 0,
+                }
+                added_nodes.append(new_node)
+                if eid not in split_points:
+                    split_points[eid] = []
+                split_points[eid].append((node_id, dist_along, close_a[0], close_a[1], is_crossing))
+
+        # Endpoint-to-own-edge check
+        edge_len = total_length
+        endpoint_margin = max(3.0, segment_separation / 2.0)
+        for ep_idx, ep_name in enumerate(["source", "target"]):
+            ep_node_id = str(edge.get(ep_name, ""))
+            ep_node = node_by_id.get(ep_node_id)
+            if not ep_node:
+                continue
+            ep_point = [float(ep_node.get("x", 0)), float(ep_node.get("y", 0))]
+            proj = _project_point_to_polyline(ep_point, points)
+            if proj is None:
+                continue
+            d_along = float(proj["distance"])
+            # Skip if projection is near the endpoint itself
+            near_self = (ep_idx == 0 and d_along <= endpoint_margin) or \
+                        (ep_idx == 1 and edge_len - d_along <= endpoint_margin)
+            if near_self:
+                continue
+            if float(proj["offset"]) > snap_tolerance:
+                continue
+
+            # Skip if the endpoint projects exactly onto a polyline node
+            # that is itself (it's already part of the polyline as an
+            # intermediate vertex, not just as source/target).
+            if float(proj["offset"]) < 1e-9:
+                continue
+
+            # Endpoint projects onto a non-adjacent part of own edge
+            node_id = _make_node_id()
+            new_node = {
+                "id": node_id,
+                "x": round(proj["point"][0], 6),
+                "y": round(proj["point"][1], 6),
+                "type": "self_near_junction",
+                "degree": 0,
+            }
+            added_nodes.append(new_node)
+            if eid not in split_points:
+                split_points[eid] = []
+            split_points[eid].append((node_id, d_along, proj["point"][0], proj["point"][1], False))
+
+    if not added_nodes:
+        return graph
+
+    # Add new nodes to graph
+    graph["nodes"].extend(added_nodes)
+    all_nodes = list(graph.get("nodes", []) or [])
+
+    # Split edges at self-contact points
+    strict_snap = 2.0
+    endpoint_margin_val = 2.0
+    split_edges: list[dict[str, Any]] = []
+
+    for edge in edges:
+        eid = str(edge.get("id"))
+        if eid not in split_points:
+            split_edges.append(dict(edge))
+            continue
+
+        boundary_nodes: list[dict[str, Any]] = []
+        for node_id, d_along, x, y, _ in split_points[eid]:
+            # Create a bare node dict just for _split_edge_at_nodes
+            boundary_nodes.append({"id": node_id, "x": x, "y": y, "type": "self_near_junction"})
+
+        _split_edge_at_nodes(
+            edge, boundary_nodes, edges, node_by_id,
+            snap_tolerance=snap_tolerance, strict_snap_tolerance=strict_snap,
+            endpoint_margin=endpoint_margin_val, split_edges=split_edges,
+        )
+
+    # Recalculate degrees for new nodes
+    for node in all_nodes:
+        node["degree"] = 0
+    for sedge in split_edges:
+        for nid in (str(sedge.get("source", "")), str(sedge.get("target", ""))):
+            for node in all_nodes:
+                if str(node.get("id", "")) == nid:
+                    node["degree"] = node.get("degree", 0) + 1
+                    break
+
+    graph["edges"] = split_edges
+    return graph
+
+
 def build_polyline_debug_svg(
     svg_w: float,
     svg_h: float,
@@ -1364,6 +1578,9 @@ def build_road_graph_overlay_svg(
         node_type = str(node.get("type", ""))
         if node_type == "manual_split_boundary":
             fill = "#ff00ff"  # magenta for split boundaries
+            radius = "3.6"
+        elif node_type in ("self_intersection", "self_near_junction"):
+            fill = "#bb44ff"  # purple for self-contact
             radius = "3.6"
         elif node_type == "junction":
             fill = "#ff7a00"

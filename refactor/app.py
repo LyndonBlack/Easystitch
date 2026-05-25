@@ -27,6 +27,7 @@ from easystitch_core.road_marker import (
     split_polylines_at_object_boundaries,
     tag_split_boundary_nodes,
     normalize_graph_topology,
+    split_self_near_intersections,
     build_centerline_graph,
     build_road_graph_overlay_svg,
     build_polyline_debug_svg,
@@ -462,6 +463,14 @@ def create_app(initial_input: str | None, output_dir: str) -> Flask:
             topology_snap_tolerance = float(settings.get("topology_snap_tolerance", 12.0))
             if not settings.get("topology_disable", False):
                 graph = normalize_graph_topology(graph, snap_tolerance=topology_snap_tolerance)
+                graph = tag_split_boundary_nodes(graph)
+                # Phase C.10: detect self-near-intersections where a centerline
+                # path crosses or passes near a non-adjacent part of itself.
+                # Uses 4px tolerance with 12px minimum segment separation.
+                graph = split_self_near_intersections(
+                    graph,
+                    snap_tolerance=float(settings.get("self_snap_tolerance", 4.0)),
+                )
                 graph = tag_split_boundary_nodes(graph)
             satin_objects = collect_satin_objects(objects, assignments)
             overlay_svg = build_road_graph_overlay_svg(svg_w_f, svg_h_f, satin_objects, graph)
