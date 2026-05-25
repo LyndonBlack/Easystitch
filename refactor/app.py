@@ -456,6 +456,7 @@ def create_app(initial_input: str | None, output_dir: str) -> Flask:
             # Phase C.9: normalize graph topology before the frontend builds roadSegments.
             # Existing visible nodes become hard breakpoints on nearby underlying edges.
             graph = normalize_graph_topology(graph, snap_tolerance=float(settings.get("topology_snap_tolerance", 12.0)))
+            topology_snap_tolerance = float(settings.get("topology_snap_tolerance", 12.0))
             graph = tag_split_boundary_nodes(graph)
             satin_objects = collect_satin_objects(objects, assignments)
             overlay_svg = build_road_graph_overlay_svg(svg_w_f, svg_h_f, satin_objects, graph)
@@ -474,6 +475,7 @@ def create_app(initial_input: str | None, output_dir: str) -> Flask:
                 "mask_width_px": mask_result["width_px"],
                 "mask_height_px": mask_result["height_px"],
                 "mask_scale": mask_result["scale"],
+                "topology_snap_tolerance": topology_snap_tolerance,
             }
 
             return jsonify({

@@ -973,6 +973,7 @@ const RoadMarker = (function() {
       Graph nodes: <b>${s.graph_node_count}</b><br>
       Graph edges: <b>${s.graph_edge_count}</b><br>
       Junction nodes: <b>${junctionCount}</b><br>
+      Snap tolerance: <b>${s.topology_snap_tolerance ?? '?'}px</b><br>
       Mask: <b>${s.mask_width_px}×${s.mask_height_px}</b> px @ scale <b>${s.mask_scale}</b>
     `;
 
