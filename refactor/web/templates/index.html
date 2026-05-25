@@ -298,6 +298,11 @@
             </div>
             <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:2px">
               <div class="range-row" style="gap:4px">
+                <label style="font-size:.72rem;color:#8f96b3">detect dist:</label>
+                <input type="range" id="self-snap-tolerance" min="1" max="15" step="0.5" value="4" oninput="syncFloatVal('self-snap-tolerance','self-snap-tolerance-val','px')" style="width:60px">
+                <span class="val" id="self-snap-tolerance-val" style="font-size:.72rem">4px</span>
+              </div>
+              <div class="range-row" style="gap:4px">
                 <label style="font-size:.72rem;color:#8f96b3">min gap:</label>
                 <input type="range" id="self-min-gap" min="0" max="30" step="1" value="12" oninput="syncVal('self-min-gap','self-min-gap-val','px')" style="width:60px">
                 <span class="val" id="self-min-gap-val" style="font-size:.72rem">12px</span>
@@ -311,6 +316,15 @@
                 <label style="font-size:.72rem;color:#8f96b3">endpt margin:</label>
                 <input type="range" id="self-endpoint-margin" min="0" max="15" step="0.5" value="3" oninput="syncFloatVal('self-endpoint-margin','self-endpoint-margin-val','px')" style="width:60px">
                 <span class="val" id="self-endpoint-margin-val" style="font-size:.72rem">3px</span>
+              </div>
+            </div>
+          </div>
+          <div class="formrow" style="margin-top:4px;padding-left:12px;border-left:2px solid #30476d">
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <div class="range-row" style="gap:4px">
+                <label style="font-size:.72rem;color:#8f96b3">DP simplify tol:</label>
+                <input type="range" id="simplify-tol" min="0.1" max="3" step="0.1" value="1" oninput="syncFloatVal('simplify-tol','simplify-tol-val','')" style="width:60px">
+                <span class="val" id="simplify-tol-val" style="font-size:.72rem">1</span>
               </div>
             </div>
           </div>

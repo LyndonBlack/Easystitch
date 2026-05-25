@@ -72,6 +72,8 @@ const RoadMarker = (function() {
         self_min_points: parseInt(document.getElementById('self-min-points')?.value || 4, 10),
         self_min_edge_length: 0.0,
         self_endpoint_margin: parseFloat(document.getElementById('self-endpoint-margin')?.value || 3.0),
+        self_snap_tolerance: parseFloat(document.getElementById('self-snap-tolerance')?.value || 4.0),
+        simplify_tolerance: parseFloat(document.getElementById('simplify-tol')?.value || 1.0),
       },
     };
   }
