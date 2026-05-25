@@ -94,3 +94,26 @@ def test_phase_c_marking_and_reopen_state_are_supported_without_stitch_scope():
     forbidden = ["generate_segment_rungs", "satin_v2", "build_stitch_plan", "previewStitches()"]
     for token in forbidden:
         assert token not in JS
+
+
+def test_phase_c7_atomic_segment_helper_is_wired_for_hard_node_boundaries():
+    assert "function buildAtomicRoadSegmentsFromGraph" in JS
+    assert "function projectPointToPolyline" in JS
+    assert "function slicePolylineByDistance" in JS
+    assert "const ROAD_ATOMIC_NODE_TOLERANCE = 4" in JS
+    assert "source_edge_id: edge.id" in JS
+    assert "edge_id: atomicId" in JS
+    assert "buildAtomicRoadSegmentsFromGraph(graphData)" in JS
+    assert "edge.points || []" in JS
+    assert "role: 'unmarked'" in JS
+    assert "priority: null" in JS
+
+
+def test_phase_c7_small_overlay_selection_uses_atomic_segments_not_raw_edges():
+    assert "function renderSmallOverlayAtomicSegments" in JS
+    assert "svgEl.querySelectorAll('polyline[data-edge-id], path[data-edge-id]').forEach(el => el.remove())" in JS
+    assert "visible.setAttribute('data-segment-id', seg.segment_id)" in JS
+    assert "hit.setAttribute('data-segment-id', seg.segment_id)" in JS
+    assert "selectRoadSegment(segmentId)" in JS
+    assert "roadSegments.find(s => s.edge_id === edgeId)" in JS
+    assert "s.source_edge_id === edgeId" not in JS

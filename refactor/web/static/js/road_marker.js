@@ -102,8 +102,172 @@ const RoadMarker = (function() {
 
   // ── centerline graph + road segment builder (Phase A + B) ────────────────
 
+  const ROAD_ATOMIC_NODE_TOLERANCE = 4;
+
+  function pointXY(p) {
+    if (!p) return null;
+    if (Array.isArray(p)) return [Number(p[0]), Number(p[1])];
+    return [Number(p.x), Number(p.y)];
+  }
+
+  function dist2(a, b) {
+    const dx = a[0] - b[0];
+    const dy = a[1] - b[1];
+    return dx * dx + dy * dy;
+  }
+
+  function dist(a, b) {
+    return Math.sqrt(dist2(a, b));
+  }
+
+  function polylineLength(points) {
+    let total = 0;
+    for (let i = 1; i < points.length; i++) total += dist(points[i - 1], points[i]);
+    return total;
+  }
+
+  function interpolatePoint(a, b, t) {
+    return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+  }
+
+  function pushUniquePoint(out, point) {
+    if (!point || !Number.isFinite(point[0]) || !Number.isFinite(point[1])) return;
+    if (out.length && dist2(out[out.length - 1], point) < 1e-12) return;
+    out.push([point[0], point[1]]);
+  }
+
+  function projectPointToPolyline(point, points) {
+    if (!point || !points || !points.length) return null;
+    if (points.length === 1) {
+      return {distance: 0, offset: dist(point, points[0]), point: points[0]};
+    }
+
+    let best = null;
+    let walked = 0;
+    for (let i = 1; i < points.length; i++) {
+      const a = points[i - 1];
+      const b = points[i];
+      const vx = b[0] - a[0];
+      const vy = b[1] - a[1];
+      const lenSq = vx * vx + vy * vy;
+      const segLen = Math.sqrt(lenSq);
+      if (segLen <= 1e-9) continue;
+      const rawT = ((point[0] - a[0]) * vx + (point[1] - a[1]) * vy) / lenSq;
+      const t = Math.max(0, Math.min(1, rawT));
+      const projected = interpolatePoint(a, b, t);
+      const offset = dist(point, projected);
+      const along = walked + segLen * t;
+      if (!best || offset < best.offset || (Math.abs(offset - best.offset) < 1e-9 && along < best.distance)) {
+        best = {distance: along, offset, point: projected};
+      }
+      walked += segLen;
+    }
+    return best;
+  }
+
+  function pointAtDistance(points, targetDistance) {
+    if (!points || !points.length) return null;
+    if (targetDistance <= 0) return points[0];
+    let walked = 0;
+    for (let i = 1; i < points.length; i++) {
+      const a = points[i - 1];
+      const b = points[i];
+      const segLen = dist(a, b);
+      if (segLen <= 1e-9) continue;
+      if (walked + segLen >= targetDistance) {
+        return interpolatePoint(a, b, (targetDistance - walked) / segLen);
+      }
+      walked += segLen;
+    }
+    return points[points.length - 1];
+  }
+
+  function slicePolylineByDistance(points, startDistance, endDistance) {
+    if (!points || !points.length) return [];
+    const total = polylineLength(points);
+    const start = Math.max(0, Math.min(total, startDistance));
+    const end = Math.max(0, Math.min(total, endDistance));
+    if (end < start) return slicePolylineByDistance(points, end, start);
+    if (Math.abs(end - start) <= 1e-9) return [pointAtDistance(points, start)];
+
+    const out = [];
+    pushUniquePoint(out, pointAtDistance(points, start));
+    let walked = 0;
+    for (let i = 1; i < points.length; i++) {
+      const segLen = dist(points[i - 1], points[i]);
+      const vertexDistance = walked + segLen;
+      if (vertexDistance > start + 1e-9 && vertexDistance < end - 1e-9) {
+        pushUniquePoint(out, points[i]);
+      }
+      walked = vertexDistance;
+    }
+    pushUniquePoint(out, pointAtDistance(points, end));
+    return out;
+  }
+
+  function buildAtomicRoadSegmentsFromGraph(graphData) {
+    if (!graphData || !graphData.edges || !graphData.nodes) return [];
+    const segments = [];
+
+    (graphData.edges || []).forEach(edge => {
+      const points = (edge.points || []).map(pointXY).filter(p => p && Number.isFinite(p[0]) && Number.isFinite(p[1]));
+      if (!points.length) return;
+      const totalLength = polylineLength(points);
+      const boundaries = [
+        {nodeId: edge.source, distance: 0},
+        {nodeId: edge.target, distance: totalLength},
+      ];
+
+      (graphData.nodes || []).forEach(node => {
+        if (!node || !node.id || node.id === edge.source || node.id === edge.target) return;
+        const xy = pointXY(node);
+        const projection = projectPointToPolyline(xy, points);
+        if (!projection || projection.offset > ROAD_ATOMIC_NODE_TOLERANCE) return;
+        if (projection.distance <= ROAD_ATOMIC_NODE_TOLERANCE) return;
+        if (totalLength - projection.distance <= ROAD_ATOMIC_NODE_TOLERANCE) return;
+        boundaries.push({nodeId: node.id, distance: projection.distance});
+      });
+
+      boundaries.sort((a, b) => a.distance - b.distance);
+      const deduped = [];
+      boundaries.forEach(boundary => {
+        const prev = deduped[deduped.length - 1];
+        if (prev && Math.abs(prev.distance - boundary.distance) <= 1e-6) return;
+        deduped.push(boundary);
+      });
+
+      for (let i = 1; i < deduped.length; i++) {
+        const a = deduped[i - 1];
+        const b = deduped[i];
+        if (b.distance - a.distance <= 1e-9) continue;
+        const atomicIndex = i;
+        const atomicId = `${edge.id}__seg_${String(atomicIndex).padStart(4, '0')}`;
+        const segmentPoints = slicePolylineByDistance(points, a.distance, b.distance);
+        segments.push({
+          segment_id: 'seg_' + String(segments.length + 1).padStart(4, '0'),
+          edge_id: atomicId,
+          source_edge_id: edge.id,
+          source_node: a.nodeId,
+          target_node: b.nodeId,
+          points: segmentPoints,
+          length: polylineLength(segmentPoints),
+          source_object_ids: edge.source_object_ids || [],
+          priority: null,
+          role: 'unmarked',
+          selected: false,
+          locked: false,
+          start_rung_id: null,
+          end_rung_id: null,
+          notes: '',
+        });
+      }
+    });
+
+    return segments;
+  }
+
   /**
-   * Convert backend graph edges into frontend road segment model (Phase B.1).
+   * Convert backend graph edges into frontend road segment model (Phase B.1/C.7).
    * Stores result in global `roadSegments` and `roadSegmentsBuilt`.
    */
   function buildRoadSegmentsFromGraph(graphData) {
@@ -113,26 +277,7 @@ const RoadMarker = (function() {
       roadSegmentsBuilt = false;
       return;
     }
-
-    graphData.edges.forEach((edge, idx) => {
-      const segId = 'seg_' + String(idx + 1).padStart(4, '0');
-      roadSegments.push({
-        segment_id: segId,
-        edge_id: edge.id,
-        source_node: edge.source,
-        target_node: edge.target,
-        points: edge.points || [],
-        length: edge.length || 0,
-        source_object_ids: edge.source_object_ids || [],
-        priority: null,
-        role: 'unmarked',
-        selected: false,
-        locked: false,
-        start_rung_id: null,
-        end_rung_id: null,
-        notes: '',
-      });
-    });
+    roadSegments = buildAtomicRoadSegmentsFromGraph(graphData);
     roadSegmentsBuilt = true;
   }
 
@@ -272,12 +417,13 @@ const RoadMarker = (function() {
     if (!svg) return;
     svg.querySelectorAll('.road-small-edge-selected-highlight').forEach(el => el.remove());
     roadSegments.filter(seg => seg.selected).forEach(seg => {
-      const visible = overlayVisibleEdgeElement(svg, seg.edge_id);
+      const visible = svg.querySelector(`.road-small-edge-visible[data-segment-id="${seg.segment_id}"]`);
       if (!visible || !visible.parentNode) return;
       const highlight = visible.cloneNode(false);
       highlight.removeAttribute('id');
       highlight.removeAttribute('style');
       highlight.setAttribute('class', 'road-small-edge-selected-highlight');
+      highlight.setAttribute('data-segment-id', seg.segment_id);
       highlight.setAttribute('data-edge-id', seg.edge_id);
       highlight.setAttribute('stroke', '#ffeb3b');
       highlight.style.setProperty('stroke', '#ffeb3b');
@@ -301,7 +447,7 @@ const RoadMarker = (function() {
     if (!svg) return;
 
     roadSegments.forEach(seg => {
-      const el = overlayVisibleEdgeElement(svg, seg.edge_id);
+      const el = svg.querySelector(`.road-small-edge-visible[data-segment-id="${seg.segment_id}"]`);
       if (el) {
         setRoadPathStroke(el, roleColor(seg.role));
         if (seg.role === 'ignore') {
@@ -325,7 +471,7 @@ const RoadMarker = (function() {
     if (!svg) return;
 
     roadSegments.forEach(seg => {
-      const el = overlayVisibleEdgeElement(svg, seg.edge_id);
+      const el = svg.querySelector(`.road-small-edge-visible[data-segment-id="${seg.segment_id}"]`);
       if (el) {
         el.setAttribute('stroke-width', seg.selected ? '2.2' : '1.5');
         setRoadPathStroke(el, roleColor(seg.role));
@@ -383,6 +529,7 @@ const RoadMarker = (function() {
       segments: roadSegments.map(s => ({
         segment_id: s.segment_id,
         edge_id: s.edge_id,
+        source_edge_id: s.source_edge_id || s.edge_id,
         source_node: s.source_node,
         target_node: s.target_node,
         points: s.points,
@@ -426,9 +573,14 @@ const RoadMarker = (function() {
     if (old) overlay.removeEventListener('click', old);
     const handler = function(e) {
       if (!roadSegmentsBuilt || !roadSegments.length) return;
-      // Find the clicked edge element
+      // Phase C.7: select atomic road segments, not parent graph edges.
       let target = e.target;
       while (target && target !== overlay) {
+        const segmentId = target.getAttribute && target.getAttribute('data-segment-id');
+        if (segmentId) {
+          selectRoadSegment(segmentId);
+          return;
+        }
         const edgeId = target.getAttribute && target.getAttribute('data-edge-id');
         if (edgeId) {
           selectRoadSegmentByEdgeId(edgeId);
@@ -723,6 +875,52 @@ const RoadMarker = (function() {
     roadMaskToast('Segment editor marks applied to Pane 3 state.', 1800);
   }
 
+  function renderSmallOverlayAtomicSegments(svgEl) {
+    if (!svgEl) return;
+    // Backend overlay SVG shows raw graph edges. Phase C.7 selection must use
+    // atomic roadSegments instead, so remove raw edge strokes and replace them
+    // with per-segment visible/hit paths.
+    svgEl.querySelectorAll('polyline[data-edge-id], path[data-edge-id]').forEach(el => el.remove());
+    const firstNode = svgEl.querySelector('circle[data-node-id]');
+
+    roadSegments.forEach(seg => {
+      const d = pathDataFromPoints(seg.points);
+      if (!d) return;
+
+      const visible = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      visible.setAttribute('class', 'road-small-edge-visible');
+      visible.setAttribute('data-segment-id', seg.segment_id);
+      visible.setAttribute('data-edge-id', seg.edge_id);
+      visible.setAttribute('data-source-edge-id', seg.source_edge_id || seg.edge_id);
+      visible.setAttribute('d', d);
+      visible.setAttribute('fill', 'none');
+      visible.setAttribute('stroke-width', '1.5');
+      visible.setAttribute('stroke-linecap', 'round');
+      visible.setAttribute('stroke-linejoin', 'round');
+      visible.setAttribute('vector-effect', 'non-scaling-stroke');
+      visible.setAttribute('pointer-events', 'none');
+      setRoadPathStroke(visible, roleColor(seg.role));
+
+      const hit = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      hit.setAttribute('class', 'road-small-edge-hit');
+      hit.setAttribute('data-segment-id', seg.segment_id);
+      hit.setAttribute('data-edge-id', seg.edge_id);
+      hit.setAttribute('data-source-edge-id', seg.source_edge_id || seg.edge_id);
+      hit.setAttribute('d', d);
+      hit.setAttribute('stroke', 'transparent');
+      hit.setAttribute('stroke-width', '5');
+      hit.setAttribute('fill', 'none');
+      hit.setAttribute('stroke-linecap', 'round');
+      hit.setAttribute('stroke-linejoin', 'round');
+      hit.setAttribute('pointer-events', 'stroke');
+      hit.setAttribute('vector-effect', 'non-scaling-stroke');
+      hit.style.cursor = 'pointer';
+
+      svgEl.insertBefore(hit, firstNode);
+      svgEl.insertBefore(visible, firstNode);
+    });
+  }
+
   // ── render: centerline graph + overlay + segments (Phase A + B) ─────────
 
   function renderCenterlineGraph(data) {
@@ -745,6 +943,9 @@ const RoadMarker = (function() {
     const edges = graph.edges || [];
     const junctionCount = nodes.filter(n => n.type === 'junction').length;
 
+    // Phase B.1/C.7: build atomic road segments before rendering/selecting overlays.
+    buildRoadSegmentsFromGraph(graph);
+
     stats.innerHTML = `
       Satin objects included: <b>${s.satin_object_count}</b><br>
       Excluded objects: <b>${s.excluded_object_count}</b><br>
@@ -766,36 +967,10 @@ const RoadMarker = (function() {
         svgEl.removeAttribute('width');
         svgEl.removeAttribute('height');
 
-        // Tag each edge path with data-edge-id for click selection and add
-        // transparent hit clones for the small toolbar preview.
-        edges.forEach(edge => {
-          const path = svgEl.querySelector(`[id="${edge.id}"]`);
-          if (path) {
-            path.classList.add('road-small-edge-visible');
-            path.setAttribute('data-edge-id', edge.id);
-            path.style.cursor = 'pointer';
-
-            const hit = path.cloneNode(false);
-            hit.removeAttribute('id');
-            hit.removeAttribute('style');
-            hit.setAttribute('class', 'road-small-edge-hit');
-            hit.setAttribute('data-edge-id', edge.id);
-            hit.setAttribute('stroke', 'transparent');
-            hit.setAttribute('stroke-width', '5');
-            hit.setAttribute('fill', 'none');
-            hit.setAttribute('stroke-linecap', 'round');
-            hit.setAttribute('stroke-linejoin', 'round');
-            hit.setAttribute('pointer-events', 'stroke');
-            hit.setAttribute('vector-effect', 'non-scaling-stroke');
-            hit.style.cursor = 'pointer';
-            path.parentNode.insertBefore(hit, path.nextSibling);
-          }
-        });
+        renderSmallOverlayAtomicSegments(svgEl);
       }
     }
 
-    // Phase B.1: build road segments from graph edges
-    buildRoadSegmentsFromGraph(graph);
     updateRoadSegmentStats();
     attachOverlayClickHandler();
     updateOverlaySegmentColors();
