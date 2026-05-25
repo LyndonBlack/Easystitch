@@ -66,6 +66,9 @@ const RoadMarker = (function() {
         error_threshold: 2.0,
         topology_snap_tolerance: parseFloat(document.getElementById('topology-snap-tolerance')?.value || 12),
         topology_disable: document.getElementById('topology-disable-check')?.checked || false,
+        self_min_gap: parseFloat(document.getElementById('self-min-gap')?.value || 12),
+        self_skip_shared_vertex: !!(document.getElementById('self-skip-shared-vertex')?.checked),
+        self_skip_exact_projection: !!(document.getElementById('self-skip-exact-proj')?.checked),
       },
     };
   }

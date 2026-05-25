@@ -290,6 +290,19 @@
           <div class="formrow" style="margin-top:4px">
             <label><input type="checkbox" id="topology-disable-check" onchange="document.getElementById('topology-disable-label').textContent=this.checked?'OFF (raw split only)':'ON (normalize)'"> <span id="topology-disable-label">ON (normalize)</span></label>
           </div>
+          <div class="formrow" style="margin-top:4px;padding-left:12px;border-left:2px solid #30476d" data-tooltip="Self-near-intersection safety gate toggles. Uncheck to disable, rebuild to test.">
+            <label style="font-size:.72rem;color:#8f96b3">Self-near checks:</label>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:4px">
+              <label style="font-size:.72rem"><input type="checkbox" id="self-skip-shared-vertex" checked> skip shared vertex</label>
+              <label style="font-size:.72rem"><input type="checkbox" id="self-skip-exact-proj" checked> skip exact proj</label>
+            </div>
+            <div class="range-row" style="margin-top:4px">
+              <label style="font-size:.72rem;color:#8f96b3">min gap:</label>
+              <input type="range" id="self-min-gap" min="0" max="30" step="1" value="12" oninput="syncVal('self-min-gap','self-min-gap-val','px')" style="width:80px">
+              <span class="val" id="self-min-gap-val" style="font-size:.72rem">12px</span>
+              <label style="font-size:.7rem;color:#666;margin-left:4px" title="0 = no minimum gap">(0=off)</label>
+            </div>
+          </div>
           <div class="meta" id="road-graph-stats" style="margin-top:8px">No centerline graph built yet.</div>
           <div id="road-graph-overlay" class="preview-img-wrap" style="margin-top:8px;min-height:120px;max-height:400px;overflow:auto;background:#fff;border:1px solid #334;border-radius:6px;display:flex;align-items:center;justify-content:center;color:#555">
             Road graph overlay will appear here.

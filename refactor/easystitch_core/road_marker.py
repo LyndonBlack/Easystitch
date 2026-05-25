@@ -1314,6 +1314,8 @@ def split_self_near_intersections(
     graph: dict[str, Any],
     snap_tolerance: float = 4.0,
     segment_separation: float = 12.0,
+    skip_shared_vertex: bool = True,
+    skip_exact_projection: bool = True,
 ) -> dict[str, Any]:
     """Split edges where a non-adjacent segment of the same edge crosses or
     passes near another part of itself.
@@ -1368,12 +1370,13 @@ def split_self_near_intersections(
             for j in range(i + 1, len(seg_starts)):
                 # Minimum distance along polyline between these segments
                 gap = dists[j] - dists[i + 1]
-                if gap < segment_separation:
+                if segment_separation > 1e-9 and gap < segment_separation:
                     continue
 
                 # Skip if segments share a vertex (loop closure or natural corner)
-                if _point_distance(points[i + 1], points[j]) <= 1e-9 or \
-                   _point_distance(points[i], points[j + 1]) <= 1e-9:
+                if skip_shared_vertex and (
+                   _point_distance(points[i + 1], points[j]) <= 1e-9 or
+                   _point_distance(points[i], points[j + 1]) <= 1e-9):
                     continue
 
                 a0, a1 = points[i], points[i + 1]
@@ -1425,7 +1428,7 @@ def split_self_near_intersections(
             # Skip if the endpoint projects exactly onto a polyline node
             # that is itself (it's already part of the polyline as an
             # intermediate vertex, not just as source/target).
-            if float(proj["offset"]) < 1e-9:
+            if skip_exact_projection and float(proj["offset"]) < 1e-9:
                 continue
 
             # Endpoint projects onto a non-adjacent part of own edge

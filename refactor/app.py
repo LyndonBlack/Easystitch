@@ -470,6 +470,9 @@ def create_app(initial_input: str | None, output_dir: str) -> Flask:
                 graph = split_self_near_intersections(
                     graph,
                     snap_tolerance=float(settings.get("self_snap_tolerance", 4.0)),
+                    segment_separation=float(settings.get("self_min_gap", 12.0)),
+                    skip_shared_vertex=bool(settings.get("self_skip_shared_vertex", True)),
+                    skip_exact_projection=bool(settings.get("self_skip_exact_projection", True)),
                 )
                 graph = tag_split_boundary_nodes(graph)
             satin_objects = collect_satin_objects(objects, assignments)
