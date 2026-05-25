@@ -280,6 +280,13 @@
             <button class="btn primary" id="road-graph-build-btn" onclick="RoadMarker.buildCenterlineGraph()">Build Centerline Graph</button>
             <button class="btn" id="road-graph-clear-btn" onclick="RoadMarker.clearOverlay()">Clear Road Overlay</button>
           </div>
+          <div class="formrow" style="margin-top:8px" data-tooltip="Widen to catch more edge-to-node connections. Narrow to avoid false splits. Rebuild the graph after changing.">
+            <label>Node snap tolerance</label>
+            <div class="range-row">
+              <input type="range" id="topology-snap-tolerance" min="2" max="15" step="1" value="12" oninput="syncVal('topology-snap-tolerance','topology-snap-tolerance-val','px')">
+              <span class="val" id="topology-snap-tolerance-val">12px</span>
+            </div>
+          </div>
           <div class="meta" id="road-graph-stats" style="margin-top:8px">No centerline graph built yet.</div>
           <div id="road-graph-overlay" class="preview-img-wrap" style="margin-top:8px;min-height:120px;max-height:400px;overflow:auto;background:#fff;border:1px solid #334;border-radius:6px;display:flex;align-items:center;justify-content:center;color:#555">
             Road graph overlay will appear here.

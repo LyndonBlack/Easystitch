@@ -64,6 +64,7 @@ const RoadMarker = (function() {
         despeckle_level: 8,
         filter_iterations: 4,
         error_threshold: 2.0,
+        topology_snap_tolerance: parseFloat(document.getElementById('topology-snap-tolerance')?.value || 12),
       },
     };
   }
